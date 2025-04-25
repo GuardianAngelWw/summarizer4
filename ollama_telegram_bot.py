@@ -44,7 +44,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # LLM Configuration
-MODEL_NAME = "microsoft/phi-2"  # Changed to a smaller model that works better
+MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Changed to a smaller model that works better
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Log the model loading
@@ -240,7 +240,7 @@ async def load_llm():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device_map="auto"
     )
     
