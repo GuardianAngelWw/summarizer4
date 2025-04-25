@@ -348,7 +348,7 @@ Knowledge Base:
 Please provide a detailed answer to the question based only on the information in the knowledge base. 
 If the knowledge base doesn't contain relevant information to answer the question, say so politely.
 Include relevant source links at the end of your response.
-Organize the answer in a clear, easy-to-read format.
+Organize the answer in a clear, easy-to-read format and in max 50 words and one paragraph also hyperlink according to telegram markdown the relevant source link to a part of word (most relevant) while sending the output.
 """
         
         # Generate response
