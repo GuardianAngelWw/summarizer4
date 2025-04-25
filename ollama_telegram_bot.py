@@ -30,7 +30,7 @@ def home():
     return "Service is running!"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)  # Ensure host is 0.0.0.0 and port is specified
+    app.run(host="0.0.0.0", port=8080)  # Ensure host is 0.0.0.0 and port is specified
 
 # Configure logging
 logging.basicConfig(
