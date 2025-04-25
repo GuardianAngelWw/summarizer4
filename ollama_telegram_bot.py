@@ -238,8 +238,7 @@ async def load_llm():
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True
+        device_map="auto"
     )
     
     return {
@@ -680,6 +679,8 @@ Organize the answer in a clear, easy-to-read format.
             model=model,
             tokenizer=tokenizer,
             max_length=1024,
+            truncation=True,
+            do_sample=True,
             temperature=0.7,  # Add some creativity but keep focused
             top_p=0.9,        # Focus on more likely tokens
         )
