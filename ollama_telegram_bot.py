@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Configuration
-BOT_TOKEN = "6614402193:AAGlt6XDgLYbxgSujSl_DSx18DtWV22rgrc"
+BOT_TOKEN = "6614402193:AAFm04CKorvjOeFrntJwkkqKygt1h2PGxQs"
 
 # Admin user IDs (comma-separated in env var)
-ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "").strip()
+ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218", "5980915474").strip()
 ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",")] if ADMIN_USER_IDS else []
 
 # CSV file to store entries
