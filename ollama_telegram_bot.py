@@ -32,9 +32,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("No BOT_TOKEN found in environment variables")
+BOT_TOKEN = "6614402193:AAGlt6XDgLYbxgSujSl_DSx18DtWV22rgrc"
 
 # Admin user IDs (comma-separated in env var)
 ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "").strip()
