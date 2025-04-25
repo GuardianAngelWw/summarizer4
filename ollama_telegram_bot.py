@@ -44,7 +44,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # LLM Configuration
-MODEL_NAME = "tiiuae/falcon-7b-instruct"
+MODEL_NAME = "tiiuae/falcon-rw-1b"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Pagination configuration
@@ -237,8 +237,9 @@ async def load_llm():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        torch_dtype=torch.bfloat16,
-        device_map="auto"
+        torch_dtype=torch.bfloat16 if DEVICE == "cuda" else torch.float32,
+        device_map="auto" if DEVICE == "cuda" else None,
+        # trust_remote_code=True  # Not needed for Falcon-1B if using recent transformers
     )
     
     return {
