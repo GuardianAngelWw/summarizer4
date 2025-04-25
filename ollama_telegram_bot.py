@@ -257,7 +257,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         f"👋 Hi {user.mention_html()}! I'm Summarizer2, an AI-powered bot for managing knowledge entries.\n\n"
         "Available commands:\n"
-        "/ask <your question> - Ask a question about the stored entries\n"
+        "/ask &lt;your question&gt; - Ask a question about the stored entries\n"
     )
     
     if is_user_admin:
