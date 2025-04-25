@@ -44,7 +44,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # LLM Configuration
-MODEL_NAME = "tiiuae/falcon-rw-1b"  # Changed to a smaller model that works better
+MODEL_NAME = "microsoft/phi-2"  # Changed to a smaller model that works better
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Log the model loading
@@ -337,21 +337,19 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         context_text = "\n\n".join(context_entries)
         
-        # Formulate an improved prompt
-        prompt = f """You are Summarizer2, a helpful AI assistant that answers questions based on a knowledge base.
-
-Question: "{question}"
-
-Knowledge Base:
-{context_text}
-
-Please provide a detailed answer to the question based only on the information in the knowledge base. 
-If the knowledge base doesn't contain relevant information to answer the question, say so politely.
-Include relevant source links at the end of your response.
-Organize the answer in a clear, easy-to-read format and in max 50 words and one paragraph also hyperlink according to telegram markdown the relevant source link to a part of word (most relevant) while sending the output.
-"""
+        prompt = f"""You are Summarizer2, a helpful AI assistant that answers questions based on a knowledge base.
         
-        # Generate response
+        Question: "{question}"
+        
+        Knowledge Base:
+        {context_text}
+        
+        Instructions:
+        - Provide a detailed answer in max 50 words, as a single paragraph (no line breaks).
+        - Hyperlink the most relevant source using Telegram markdown ([text](url)).
+        - If the knowledge base does not contain relevant info, say so politely.
+        """
+        #Generate response
         pipe = pipeline(
             "text-generation",
             model=model,
