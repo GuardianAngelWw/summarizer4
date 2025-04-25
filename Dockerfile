@@ -18,6 +18,10 @@ COPY ollama_telegram_bot.py .
 
 # Ensure we have a directory for the entries file
 RUN touch entries.csv
+RUN mkdir -p /app/logs  # Create a directory for logs
+
+# Expose a port for containerized services (optional; adjust as needed)
+EXPOSE 8080
 
 # Command to run the application
 CMD ["python", "ollama_telegram_bot.py"]
