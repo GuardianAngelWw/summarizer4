@@ -21,6 +21,16 @@ from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
 from dotenv import load_dotenv
+from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Service is running!"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)  # Ensure host is 0.0.0.0 and port is specified
 
 # Configure logging
 logging.basicConfig(
