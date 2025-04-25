@@ -5,8 +5,6 @@ import logging
 import re
 import tempfile
 import json
-import time
-import io
 from typing import List, Dict, Optional, Tuple, Any, Set
 from functools import wraps
 
@@ -22,7 +20,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
 
 # Configure logging
 logging.basicConfig(
@@ -30,8 +28,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables - search for .env file in parent directories if not in current
-load_dotenv(find_dotenv(usecwd=True))
+# Load environment variables
+load_dotenv()
 
 # Configuration
 BOT_TOKEN = "6614402193:AAFm04CKorvjOeFrntJwkkqKygt1h2PGxQs"
@@ -45,13 +43,12 @@ ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
-# CSV Upload Size Limit (10MB)
-MAX_CSV_SIZE = 10 * 1024 * 1024  # 10MB in bytes
-
-# LLM Configuration - using smaller model for faster response time
-MODEL_NAME = "tiiuae/falcon-rw-1b"  # Smaller, faster model
+# LLM Configuration
+MODEL_NAME = "tiiuae/falcon-rw-1b"  # Changed to a smaller model that works better
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MAX_RESPONSE_LENGTH = 512  # Limit response length for faster processing
+
+# Log the model loading
+logger.info(f"Bot started with model: {MODEL_NAME} on device: {DEVICE}")
 
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
@@ -238,47 +235,19 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
-# Global LLM components for reuse
-_MODEL = None
-_TOKENIZER = None
-_PIPE = None
-
 async def load_llm():
-    """Load the LLM model with caching for better performance."""
-    global _MODEL, _TOKENIZER, _PIPE
-    
-    # Return cached model if already loaded
-    if _MODEL is not None and _TOKENIZER is not None and _PIPE is not None:
-        return {
-            "model": _MODEL,
-            "tokenizer": _TOKENIZER,
-            "pipe": _PIPE
-        }
-    
-    # Load with optimizations for smaller models
-    _TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME)
-    _MODEL = AutoModelForCausalLM.from_pretrained(
+    """Load the LLM model."""
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,  # Use float16 only on GPU
+        torch_dtype=torch.bfloat16,
         device_map="auto",
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,  # Optimize memory usage
-    )
-    
-    # Create the pipeline once for reuse
-    _PIPE = pipeline(
-        "text-generation",
-        model=_MODEL,
-        tokenizer=_TOKENIZER,
-        max_length=MAX_RESPONSE_LENGTH,
-        temperature=0.7,  # Add some creativity but keep focused
-        top_p=0.9,        # Focus on more likely tokens
+        trust_remote_code=True
     )
     
     return {
-        "model": _MODEL,
-        "tokenizer": _TOKENIZER,
-        "pipe": _PIPE
+        "model": model,
+        "tokenizer": tokenizer,
     }
 
 # Command Handlers
@@ -292,6 +261,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"👋 Hi {user.mention_html()}! I'm Summarizer2, an AI-powered bot for managing knowledge entries.\n\n"
         "Available commands:\n"
         "/ask <your question> - Ask a question about the stored entries\n"
+        "/here <your question> - Answer a question (when replying to someone)\n"
     )
     
     if is_user_admin:
@@ -301,7 +271,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/download - Download the current CSV file\n"
             "/upload - Upload a CSV file\n"
             "/clear - Clear all entries or entries in a specific category\n"
-            "/here - Send info to the person you replied to\n"
         )
         help_text += admin_text
     
@@ -309,42 +278,130 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_html(help_text)
     
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a response to the person being replied to and delete the original query."""
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    # Check if user is admin
-    if not await is_admin(context, chat_id, user_id):
-        await update.message.reply_text("Sorry, this command is restricted to admins only.")
-        return
-    
+    """Answer a question using the LLM but reply to the person being replied to and delete the command."""
     # Check if this message is a reply
     if update.message.reply_to_message is None:
         await update.message.reply_text("This command must be used as a reply to another message.")
+        return
+    
+    # Get the question from the command text
+    command_text = update.message.text
+    question = command_text[5:].strip()  # Remove "/here "
+    
+    if not question:
+        await update.message.reply_text(
+            "Please provide a question after the /here command. For example:\n"
+            "/here What are the main features of Summarizer2?"
+        )
         return
     
     # Get the message this is replying to
     replied_msg = update.message.reply_to_message
     replied_user = replied_msg.from_user
     
-    # Extract any text after the command
-    command_text = update.message.text
-    response_text = command_text[5:].strip()  # Remove "/here "
+    # Send initial thinking message
+    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
     
-    if not response_text:
-        response_text = "Here's the information you requested."
+    # Determine group ID for group-specific entries if in a group chat
+    group_id = None
+    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        group_id = update.effective_chat.id
     
-    # Send response to the replied user
-    await replied_msg.reply_text(
-        f"{replied_user.mention_html()}, {response_text}",
-        parse_mode=ParseMode.HTML
-    )
+    # Get entries for context - specific to this group if in a group chat
+    entries = read_entries(group_id=group_id)
     
-    # Delete the original command message
-    try:
+    if not entries:
+        await thinking_message.delete()
+        await replied_msg.reply_text(
+            f"{replied_user.mention_html()}, no knowledge entries found to answer your question.", 
+            parse_mode=ParseMode.HTML
+        )
         await update.message.delete()
+        return
+    
+    try:
+        # Load LLM components
+        await thinking_message.edit_text("Loading LLM model...")
+        
+        llm_components = await load_llm()
+        model = llm_components["model"]
+        tokenizer = llm_components["tokenizer"]
+        
+        await thinking_message.edit_text("Processing your question with the LLM...")
+        
+        # Create context from entries with categories
+        context_entries = []
+        for entry in entries:
+            category = entry.get("category", "General")
+            entry_text = f"Category: {category}\nEntry: {entry['text']}\nSource: {entry['link']}"
+            context_entries.append(entry_text)
+        
+        context_text = "\n\n".join(context_entries)
+        
+        # Formulate an improved prompt
+        prompt = f"""You are Summarizer2, a helpful AI assistant that answers questions based on a knowledge base.
+
+Question: "{question}"
+
+Knowledge Base:
+{context_text}
+
+Please provide a detailed answer to the question based only on the information in the knowledge base. 
+If the knowledge base doesn't contain relevant information to answer the question, say so politely.
+Include relevant source links at the end of your response.
+Organize the answer in a clear, easy-to-read format.
+"""
+        
+        # Generate response
+        pipe = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            max_length=1024,
+            temperature=0.7,  # Add some creativity but keep focused
+            top_p=0.9,        # Focus on more likely tokens
+        )
+        
+        result = pipe(prompt)[0]["generated_text"]
+        
+        # Extract the actual answer (remove the prompt)
+        answer_parts = result.split("Please provide a detailed answer")
+        if len(answer_parts) > 1:
+            answer = answer_parts[1]
+        else:
+            answer = result[len(prompt):]
+        
+        # Clean up the answer
+        if not answer.strip():
+            answer = "I couldn't generate a proper response based on the available knowledge."
+        
+        # Send response to the replied user
+        await thinking_message.delete()
+        await replied_msg.reply_text(
+            f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{answer}",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Delete the original command message
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {str(e)}")
+    
     except Exception as e:
-        logger.error(f"Error deleting message: {str(e)}")
+        logger.error(f"Error generating LLM response: {str(e)}")
+        await thinking_message.delete()
+        await replied_msg.reply_text(
+            f"{replied_user.mention_html()}, sorry, I encountered an error while processing your question.\n"
+            f"Error: {str(e)[:100]}...",
+            parse_mode=ParseMode.HTML
+        )
+        
+        # Still try to delete the command message
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {str(e)}")
 
 @admin_only
 async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -649,8 +706,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("Operation canceled.")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Answer a question using the LLM and knowledge base with optimized processing time."""
-    start_time = time.time()
+    """Answer a question using the LLM and knowledge base."""
     question = " ".join(context.args)
     
     if not question:
@@ -661,7 +717,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     
     # Send initial thinking message
-    thinking_message = await update.message.reply_text("🤔 Processing your question...")
+    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
     
     # Determine group ID for group-specific entries if in a group chat
     group_id = None
@@ -677,84 +733,56 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     
     try:
-        # Load LLM components (with caching)
-        model_load_start = time.time()
+        # Load LLM components
+        await thinking_message.edit_text("Loading LLM model...")
+        
         llm_components = await load_llm()
-        model_load_time = time.time() - model_load_start
-        logger.info(f"Model loading took {model_load_time:.2f} seconds")
+        model = llm_components["model"]
+        tokenizer = llm_components["tokenizer"]
         
-        # Use the cached pipeline for efficiency
-        pipe = llm_components.get("pipe")
-        if pipe is None:
-            # Fallback if pipe not in components
-            model = llm_components["model"]
-            tokenizer = llm_components["tokenizer"]
-            pipe = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=tokenizer,
-                max_length=MAX_RESPONSE_LENGTH,
-                temperature=0.7,
-                top_p=0.9,
-            )
+        await thinking_message.edit_text("Processing your question with the LLM...")
         
-        # Create optimized context from entries - limit size for performance
-        context_build_start = time.time()
+        # Create context from entries with categories
         context_entries = []
-        total_tokens = 0
-        max_context_tokens = 1000  # Limit context size for faster processing
-        
-        # First, add most relevant entries based on question keywords
-        question_keywords = [word.lower() for word in question.split() if len(word) > 3]
-        
-        # Score entries by keyword relevance
-        scored_entries = []
         for entry in entries:
-            score = 0
-            entry_text = entry['text'].lower()
-            for keyword in question_keywords:
-                if keyword in entry_text:
-                    score += 1
-            scored_entries.append((score, entry))
-        
-        # Sort by relevance score (highest first)
-        scored_entries.sort(reverse=True, key=lambda x: x[0])
-        
-        # Add entries to context until max token limit
-        for _, entry in scored_entries:
             category = entry.get("category", "General")
             entry_text = f"Category: {category}\nEntry: {entry['text']}\nSource: {entry['link']}"
-            estimated_tokens = len(entry_text.split())
-            
-            if total_tokens + estimated_tokens <= max_context_tokens:
-                context_entries.append(entry_text)
-                total_tokens += estimated_tokens
-            else:
-                break
+            context_entries.append(entry_text)
         
         context_text = "\n\n".join(context_entries)
-        context_build_time = time.time() - context_build_start
-        logger.info(f"Context building took {context_build_time:.2f} seconds with {len(context_entries)} entries")
         
-        # Formulate a concise, efficient prompt
-        prompt = f"""You are Summarizer2. Answer this question using only the knowledge base provided.
+        # Formulate an improved prompt
+        prompt = f"""You are Summarizer2, a helpful AI assistant that answers questions based on a knowledge base.
 
 Question: "{question}"
 
 Knowledge Base:
 {context_text}
 
-Provide a concise answer with relevant source links. If the knowledge base lacks relevant information, say so politely."""
+Please provide a detailed answer to the question based only on the information in the knowledge base. 
+If the knowledge base doesn't contain relevant information to answer the question, say so politely.
+Include relevant source links at the end of your response.
+Organize the answer in a clear, easy-to-read format.
+"""
         
-        # Generate response with timing
-        inference_start = time.time()
+        # Generate response
+        pipe = pipeline(
+            "text-generation",
+            model=model,
+            tokenizer=tokenizer,
+            max_length=1024,
+            temperature=0.7,  # Add some creativity but keep focused
+            top_p=0.9,        # Focus on more likely tokens
+        )
+        
         result = pipe(prompt)[0]["generated_text"]
-        inference_time = time.time() - inference_start
-        logger.info(f"LLM inference took {inference_time:.2f} seconds")
         
-        # Extract the actual answer (remove the prompt) - more efficiently
-        answer = result[result.find("Knowledge Base:") + 14:]
-        answer = answer.split("\n\n", 1)[-1] if "\n\n" in answer else answer
+        # Extract the actual answer (remove the prompt)
+        answer_parts = result.split("Please provide a detailed answer")
+        if len(answer_parts) > 1:
+            answer = answer_parts[1]
+        else:
+            answer = result[len(prompt):]
         
         # Clean up the answer
         if not answer.strip():
@@ -766,11 +794,7 @@ Provide a concise answer with relevant source links. If the knowledge base lacks
             f"Question: {question}\n\n{answer}",
             parse_mode=ParseMode.MARKDOWN
         )
-        
-        # Log total response time
-        total_time = time.time() - start_time
-        logger.info(f"Total /ask response time: {total_time:.2f} seconds")
-        
+    
     except Exception as e:
         logger.error(f"Error generating LLM response: {str(e)}")
         await thinking_message.delete()
@@ -810,7 +834,7 @@ async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAUL
 
 @admin_only
 async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Download the entries CSV file with proper handling for non-empty files."""
+    """Download the entries CSV file."""
     if not os.path.exists(ENTRIES_FILE):
         await update.message.reply_text("No entries file exists yet.")
         return
@@ -821,48 +845,29 @@ async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         group_id = update.effective_chat.id
         entries = read_entries(group_id)
         
-        if not entries:
-            await update.message.reply_text("No entries found for this group.")
-            return
-            
-        # Create a CSV in memory to avoid file I/O
-        csv_buffer = io.StringIO()
-        writer = csv.DictWriter(csv_buffer, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        writer.writerows(entries)
-        
-        # Convert to bytes for sending
-        csv_bytes = io.BytesIO(csv_buffer.getvalue().encode('utf-8'))
-        csv_bytes.seek(0)  # Reset buffer position
-        
-        # Send the filtered CSV
-        await update.message.reply_document(
-            document=csv_bytes,
-            filename=f"entries_{update.effective_chat.title or 'group'}_{len(entries)}_items.csv",
-            caption=f"📊 Here's your knowledge base CSV file for this group with {len(entries)} entries."
-        )
+        # Create a temporary file with only the group's entries
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            try:
+                with open(temp_file.name, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+                    writer.writeheader()
+                    writer.writerows(entries)
+                
+                # Send the filtered CSV
+                await update.message.reply_document(
+                    document=open(temp_file.name, "rb"),
+                    filename=f"entries_{update.effective_chat.title or 'group'}.csv",
+                    caption=f"Here's your knowledge base CSV file for this group. ({len(entries)} entries)"
+                )
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file.name)
     else:
         # For private chats, send the full CSV
-        entries = read_entries()
-        
-        if not entries:
-            await update.message.reply_text("The entries file exists but contains no entries.")
-            return
-            
-        # Create a CSV in memory
-        csv_buffer = io.StringIO()
-        writer = csv.DictWriter(csv_buffer, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        writer.writerows(entries)
-        
-        # Convert to bytes for sending
-        csv_bytes = io.BytesIO(csv_buffer.getvalue().encode('utf-8'))
-        csv_bytes.seek(0)  # Reset buffer position
-        
         await update.message.reply_document(
-            document=csv_bytes,
-            filename=f"entries_{len(entries)}_items.csv",
-            caption=f"📊 Here's your complete knowledge base with {len(entries)} entries."
+            document=open(ENTRIES_FILE, "rb"),
+            filename="entries.csv",
+            caption=f"Here's your complete knowledge base CSV file."
         )
 
 @admin_only
@@ -872,57 +877,38 @@ async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
     category_list = ", ".join(categories)
     
     await update.message.reply_text(
-        "📤 Upload your CSV file by replying to this message with an attachment.\n\n"
-        f"Required columns: 'text', 'link'\nOptional columns: 'category', 'group_id'\n\n"
+        "Please upload your CSV file as a reply to this message.\n\n"
+        f"The file should have these columns: 'text', 'link', 'category', 'group_id'\n\n"
         f"Available categories: {category_list}\n\n"
-        f"Size limit: {MAX_CSV_SIZE/1024/1024:.1f}MB\n\n"
         "If you're adding entries for this group, leave group_id empty."
     )
     # Set the expected state
     context.user_data["awaiting_csv"] = True
-    # Store the message ID for reference validation in handle_csv_upload
-    context.user_data["csv_request_message_id"] = update.message.message_id
 
 @admin_only
 async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the uploaded CSV file with improved error handling and size limits."""
-    # Check if we're expecting a CSV upload
-    if not context.user_data.get("awaiting_csv"):
-        return
+    """Handle the uploaded CSV file."""
+    # Always try to process CSV files when they're uploaded in reply
+    if update.message.reply_to_message and update.message.document:
+        # Set the state to true to ensure processing continues
+        context.user_data["awaiting_csv"] = True
     
-    # Check if this is a reply to our upload request message
-    request_msg_id = context.user_data.get("csv_request_message_id")
-    if not update.message.reply_to_message or update.message.reply_to_message.message_id != request_msg_id:
+    if not context.user_data.get("awaiting_csv"):
         return
     
     # Reset state
     context.user_data["awaiting_csv"] = False
-    context.user_data.pop("csv_request_message_id", None)
     
     if not update.message.document:
-        await update.message.reply_text("⚠️ Please upload a CSV file as an attachment.")
+        await update.message.reply_text("Please upload a CSV file.")
         return
     
     document = update.message.document
-    file_name = document.file_name.lower() if document.file_name else ""  # Handle None case
-    file_size = document.file_size
+    file_name = document.file_name.lower() if document.file_name else "unnamed.file"
     
-    # Size check
-    if file_size > MAX_CSV_SIZE:
-        await update.message.reply_text(
-            f"⚠️ File too large ({file_size/1024/1024:.1f}MB). "
-            f"Maximum size is {MAX_CSV_SIZE/1024/1024:.1f}MB."
-        )
-        return
-    
-    # Check for CSV file (better MIME type checking)
-    if not (file_name.endswith(".csv") or document.mime_type == "text/csv"):
-        await update.message.reply_text("⚠️ Please upload a file with .csv extension or MIME type text/csv.")
-        return
-    
-    # Status message
-    status_message = await update.message.reply_text("⏳ Processing your CSV file...")
-    start_time = time.time()
+    # More permissive file checking - accept any file and try to process as CSV
+    uploaded_entries = []
+    processing_status = await update.message.reply_text("⏳ Processing your uploaded file...")
     
     try:
         # Download the file
@@ -930,83 +916,104 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             await file.download_to_drive(temp_file.name)
-            
-            # Read the uploaded CSV
-            uploaded_entries = []
-            invalid_rows = 0
+            file_path = temp_file.name
+        
+        # Try multiple parsing approaches
+        file_content = ""
+        rows_parsed = []
+        
+        # First read the raw content to examine
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                file_content = f.read()
+        except UnicodeDecodeError:
+            # Try different encodings if UTF-8 fails
             try:
-                with open(temp_file.name, "r", encoding="utf-8") as f:
-                    # First check if file is empty
-                    content = f.read()
-                    if not content.strip():
-                        await status_message.edit_text("⚠️ The uploaded CSV file is empty.")
-                        return
-                    
-                    # Reset file pointer
-                    f.seek(0)
-                    reader = csv.DictReader(f)
-                    
-                    # Get the actual fieldnames from the CSV
-                    actual_headers = reader.fieldnames or []
-                    
-                    # Check for minimum required headers
+                with open(file_path, "r", encoding="latin-1") as f:
+                    file_content = f.read()
+            except Exception as e:
+                await processing_status.edit_text(f"Error reading file: {str(e)}")
+                return
+                
+        # Check if content looks like a CSV
+        if not any(separator in file_content for separator in [",", "\t", ";"]):
+            await processing_status.edit_text(
+                "The uploaded file doesn't appear to be in CSV format. Expected comma, tab, or semicolon delimiters."
+            )
+            return
+            
+        # Try different delimiters
+        for delimiter in [",", "\t", ";"]:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f, delimiter=delimiter)
+                    if not reader.fieldnames:
+                        continue
+                        
+                    # Check for required headers
                     required_headers = ["text", "link"]
-                    if not all(header in actual_headers for header in required_headers):
-                        await status_message.edit_text(
-                            f"⚠️ CSV must contain these headers: {', '.join(required_headers)}\n"
-                            "Example CSV format:\n"
-                            "text,link,category,group_id\n"
-                            "\"Sample entry\",\"https://example.com\",\"General\",\"\""
-                        )
-                        return
+                    if all(header in reader.fieldnames for header in required_headers):
+                        # Found a working delimiter with required headers
+                        rows_parsed = list(reader)  # Convert to list to preserve after file close
+                        await processing_status.edit_text(f"✅ Found CSV format with {delimiter} delimiter")
+                        break
+            except Exception as e:
+                logger.info(f"Parsing with delimiter {delimiter} failed: {str(e)}")
+                continue
+                
+        # If we didn't parse any rows with standard headers, try alternative approaches
+        if not rows_parsed:
+            await processing_status.edit_text(
+                "Could not find required 'text' and 'link' columns in the CSV. "
+                "Please check the file format and try again."
+            )
+            return
+            
+        # Get current group ID if in a group
+        current_group_id = None
+        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            current_group_id = update.effective_chat.id
+            
+        # Process the successfully parsed rows
+        for i, row in enumerate(rows_parsed, 1):
+            try:
+                # Check if we have text and link - the minimum required fields
+                text = row.get("text", "").strip()
+                link = row.get("link", "").strip()
+                
+                if not text or not link:
+                    logger.warning(f"Skipping row {i}: Missing required text or link field")
+                    continue
                     
-                    # Get current group ID if in a group
-                    current_group_id = None
-                    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-                        current_group_id = update.effective_chat.id
+                # Create entry with defaults for missing fields
+                new_entry = {
+                    "text": text,
+                    "link": link,
+                    "category": row.get("category", "General").strip() or "General",
+                    "group_id": row.get("group_id", "").strip()
+                }
+                
+                # If in a group and no group_id specified, assign current group
+                if current_group_id and not new_entry["group_id"]:
+                    new_entry["group_id"] = str(current_group_id)
                     
-                    # Process entries with memory-efficient approach
-                    memory_usage_limit = 100 * 1024 * 1024  # 100MB memory limit for processing
-                    estimated_memory_per_entry = 500  # Estimate 500 bytes per entry
-                    max_entries = memory_usage_limit // estimated_memory_per_entry
-                    
-                    for row in reader:
-                        if len(uploaded_entries) >= max_entries:
-                            await status_message.edit_text(f"⚠️ Too many entries in CSV (limit: {max_entries})")
-                            return
-                            
-                        if row.get("text") and row.get("link"):  # Only require these two fields
-                            new_entry = {
-                                "text": row["text"],
-                                "link": row["link"],
-                                "category": row.get("category", "General"),
-                                "group_id": row.get("group_id", "")
-                            }
-                            
-                            # If in a group and no group_id specified, assign current group
-                            if current_group_id and not new_entry["group_id"]:
-                                new_entry["group_id"] = str(current_group_id)
-                                
-                            uploaded_entries.append(new_entry)
-                        else:
-                            invalid_rows += 1
-            finally:
-                # Clean up temp file
-                os.unlink(temp_file.name)
+                uploaded_entries.append(new_entry)
+            except Exception as row_error:
+                logger.error(f"Error processing row {i}: {str(row_error)}")
+                # Continue processing other rows despite this error
+        # Clean up temp file at the end
+        try:
+            os.unlink(file_path)
+        except Exception as e:
+            logger.error(f"Error cleaning up temp file: {str(e)}")
         
         if not uploaded_entries:
-            await status_message.edit_text("⚠️ No valid entries found in the CSV file.")
+            await processing_status.edit_text("No valid entries found in the CSV file.")
             return
         
         # Confirm before overwriting
-        processing_time = time.time() - start_time
-        logger.info(f"CSV processing took {processing_time:.2f} seconds for {len(uploaded_entries)} entries")
-        
-        message = (f"✅ Found {len(uploaded_entries)} valid entries in the CSV file.")
-        if invalid_rows > 0:
-            message += f" ({invalid_rows} invalid rows skipped)"
-        message += "\nWhat would you like to do?"
-            
+        await processing_status.delete()
+        message = f"✅ Found {len(uploaded_entries)} valid entries in the CSV file. Do you want to:"
         keyboard = [
             [
                 InlineKeyboardButton("Replace All", callback_data="csv:replace"),
@@ -1018,11 +1025,15 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # Store entries for later use
         context.user_data["uploaded_entries"] = uploaded_entries
         
-        await status_message.edit_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
         
     except Exception as e:
         logger.error(f"Error processing CSV upload: {str(e)}")
-        await status_message.edit_text(f"⚠️ Error processing the uploaded file:\n{str(e)}")
+        try:
+            await processing_status.delete()
+        except:
+            pass  # Ignore if status message already deleted
+        await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
 
 async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle callback queries for CSV operations."""
@@ -1111,7 +1122,7 @@ def main() -> None:
     application.add_handler(CommandHandler("download", download_csv))  # Admin-only
     application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
     application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
-    application.add_handler(CommandHandler("here", here_command))  # New admin-only command
+    application.add_handler(CommandHandler("here", here_command))  # Available to all users
 
     # Enhanced callback query handlers
     application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
@@ -1122,18 +1133,14 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
     application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
 
-    # Document handler for CSV upload via the /upload command
+    # Document handler for CSV upload - more permissive to handle different formats
     application.add_handler(
         MessageHandler(
-            (filters.Document.MimeType("text/csv") | 
-             filters.Document.FileExtension(".csv")) & 
+            (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
             filters.REPLY, 
             handle_csv_upload
         )
     )
-    
-    # Log application startup
-    logger.info(f"Bot started with model: {MODEL_NAME} on device: {DEVICE}")
 
     # Start the Bot
     application.run_polling(allowed_updates=Update.ALL_TYPES)
