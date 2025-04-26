@@ -48,7 +48,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # LLM Configuration
-MODEL_NAME = "facebook/bart-large-cnn"  # Changed to a summarization model
+MODEL_NAME = "microsoft/bitnet-b1.58-2B-4T"  # Changed to a summarization model
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Log the model loading
@@ -241,9 +241,9 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
 
 # Load the LLM model
 async def load_llm():
-    tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSeq2SeqLM.from_pretrained(
-        "facebook/bart-large-cnn",
+        MODEL_NAME,
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device_map="auto"
     )
