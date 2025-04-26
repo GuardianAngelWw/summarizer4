@@ -19,6 +19,8 @@ jobs:
       contents: read
       packages: write
       security-events: write
+      actions: read    # Added for better integration access
+      id-token: write # Added for better security scanning integration
 
     steps:
       - name: Build Info
@@ -63,11 +65,12 @@ jobs:
           scanners: 'vuln'
 
       - name: Upload scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3  # Updated from v2 to v3
         if: always()
         with:
           sarif_file: trivy-results.sarif
           wait-for-processing: true
+          category: 'trivy'  # Added to better categorize the results
 
       - name: Store Trivy scan results
         if: always()
