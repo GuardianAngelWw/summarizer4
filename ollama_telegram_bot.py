@@ -729,7 +729,12 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context_entries = "\n\n".join(
         f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
     )
-    prompt = build_prompt(question, context_entries)
+    prompt = f"""You are an AI assistant. Answer the question concisely based on the provided knowledge base. Include hyperlinks where appropriate.
+
+    Question: {question}
+
+    Knowledge Base:
+    {context_entries}"""
 
     # Generate response
     try:
@@ -740,9 +745,12 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
 
+        # Format the final answer in Markdown
+        output = f"**Question:** {question}\n\n{final_answer}"
+
         # Send final response
         await thinking_message.delete()
-        await update.message.reply_html(f"Question: {question}\n\n{final_answer}")
+        await update.message.reply_markdown(output)
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
