@@ -29,6 +29,33 @@ app = Flask(__name__)
 # Add these imports at the top of ollama_telegram_bot.py
 from flask import jsonify
 import datetime
+# Add these imports at the top
+import logging.handlers
+import datetime
+
+# Update logging configuration
+log_file = os.path.join('logs', 'bot.log')
+os.makedirs('logs', exist_ok=True)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(),
+        logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=10485760,  # 10MB
+            backupCount=5
+        )
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+# Add startup logging
+logger.info(f"Bot starting at {datetime.datetime.utcnow().isoformat()}")
+logger.info(f"Running on device: {DEVICE}")
+logger.info(f"Model: {MODEL_NAME}")
 
 # Add these routes before the main() function
 @app.route('/health')
