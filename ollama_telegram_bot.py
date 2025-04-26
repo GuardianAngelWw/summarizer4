@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Configuration
-BOT_TOKEN = "6614402193:AAHVcn0TXbVpSJry0yyzT5NCh2FdBTbSFhM"
+BOT_TOKEN = "6699165939:AAFTMvFWJPCpzCNaXX0eu4hSaK06T7tcWPk"
 
 # Admin user IDs (comma-separated in env var)
 ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
