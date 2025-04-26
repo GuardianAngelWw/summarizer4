@@ -9,8 +9,9 @@ on:
 env:
   REGISTRY: ghcr.io
   REPO_NAME: guardianangelww/summarizer4
-  CURRENT_DATE: "2025-04-26 15:05:39"
-  CURRENT_USER: "GuardianAngelWw"
+  # Use dynamic date and user instead of hardcoded values
+  CURRENT_DATE: ${{ github.event.repository.updated_at }}
+  CURRENT_USER: ${{ github.actor }}
 
 jobs:
   build-and-push:
@@ -43,7 +44,7 @@ jobs:
         id: docker_build
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./python_template
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.REPO_NAME }}:latest
