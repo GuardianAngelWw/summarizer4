@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Configuration
-BOT_TOKEN = "6699165939:AAFTMvFWJPCpzCNaXX0eu4hSaK06T7tcWPk"
+BOT_TOKEN = "6614402193:AAHusqefymCoD6teFgAAliL69cGStqV4vM0"
 
 # Admin user IDs (comma-separated in env var)
 ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
@@ -47,7 +47,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # LLM Configuration
-MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # Changed to a smaller model that works better
+MODEL_NAME = "google/gemma-2b-it"  # Changed to a smaller model that works better
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Log the model loading
