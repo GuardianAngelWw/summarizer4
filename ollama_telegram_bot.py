@@ -239,12 +239,12 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
-# Load the LLM model
+# Modify the load_llm function
 async def load_llm():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-    model = AutoModelForSeq2SeqLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        trust_remote_code=True,  # Allow custom code execution
+        trust_remote_code=True,
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device_map="auto"
     )
@@ -700,11 +700,18 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
         )
     return answer
 
+# Modify the generate_response function to handle causal language model output
 async def generate_response(prompt: str, model, tokenizer) -> str:
     inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(model.device)
-    summary_ids = model.generate(inputs["input_ids"], max_length=150, min_length=30, length_penalty=2.0, num_beams=4)
-    summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-    return summary
+    outputs = model.generate(
+        inputs["input_ids"],
+        max_length=150,
+        min_length=30,
+        do_sample=True,
+        top_p=0.9,
+        temperature=0.7,
+        num_return_sequences=1
+    )
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
