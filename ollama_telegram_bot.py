@@ -19,6 +19,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 from dotenv import load_dotenv
 from flask import Flask
@@ -240,9 +241,9 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
 
 # Load the LLM model
 async def load_llm():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
+    tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large-cnn")
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        "facebook/bart-large-cnn",
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device_map="auto"
     )
@@ -677,14 +678,9 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are Summarizer2, an AI assistant. Based on the provided knowledge base, answer the question briefly in no more than 50 words. 
-    Include a hyperlink in Telegram markdown ([text](url)) for the most relevant source, and do not hallucinate information.
-    
-    Question: {question}
-    
-    Knowledge Base:
-    {context_text}
-    """
+    return f"""You are an AI assistant. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:\n\n
+    Question: {question}\n\n
+    Knowledge Base:\n{context_text}"""
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
@@ -704,27 +700,10 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     return answer
 
 async def generate_response(prompt: str, model, tokenizer) -> str:
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_length=200,  # Limit output length for concise responses
-        temperature=0,   # Deterministic output
-        top_p=1.0,       # Focus on the most likely tokens
-    )
-    result = pipe(prompt)[0]["generated_text"]
-
-    # Extract the answer without the prompt
-    try:
-        answer_start = result.find("Question:") + len("Question:")
-        answer = result[answer_start:].strip()
-        instructions_index = answer.find("Instructions:")
-        if instructions_index != -1:
-            answer = answer[:instructions_index].strip()
-        return answer
-    except Exception as e:
-        logger.error(f"Error extracting answer: {str(e)}")
-        return "I couldn't generate a proper answer based on the knowledge base."
+    inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(model.device)
+    summary_ids = model.generate(inputs["input_ids"], max_length=150, min_length=30, length_penalty=2.0, num_beams=4)
+    summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+    return summary
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
