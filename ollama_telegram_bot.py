@@ -48,7 +48,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # LLM Configuration
-MODEL_NAME = "google/gemma-2b-it"  # Changed to a smaller model that works better
+MODEL_NAME = "facebook/bart-large-cnn"  # Changed to a summarization model
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Log the model loading
