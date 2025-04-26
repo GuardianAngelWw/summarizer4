@@ -48,7 +48,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # LLM Configuration
-MODEL_NAME = "microsoft/bitnet-b1.58-2B-4T"  # Changed to a summarization model
+MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # Changed to a summarization model
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Log the model loading
