@@ -17,8 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY ollama_telegram_bot.py .
+COPY .env .
 
-# Ensure we have a directory for the entries file
+# Create necessary directories and files
 RUN touch entries.csv && \
     mkdir -p /app/logs
 
