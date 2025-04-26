@@ -26,6 +26,25 @@ from flask import Flask
 
 app = Flask(__name__)
 
+# Add this import at the top with your other imports
+from flask import jsonify
+
+# Add these routes to your Flask app
+@app.route('/health')
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'version': '1.0.0',
+        'timestamp': datetime.datetime.utcnow().isoformat()
+    })
+
+@app.route('/')
+def root():
+    return jsonify({
+        'message': 'Summarizer Bot is running',
+        'documentation': 'Add /health for health check endpoint'
+    })
+
 # Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
