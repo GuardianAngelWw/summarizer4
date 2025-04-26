@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ main ]
 
+env:
+  REGISTRY: ghcr.io
+  REPO_NAME: ${{ github.repository }}
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -22,41 +26,54 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Convert repository name to lowercase
-        id: to-lower
         run: |
-          echo "repo_lowercase=${GITHUB_REPOSITORY,,}" >> $GITHUB_OUTPUT
+          echo "LOWERCASE_REPO=${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image (latest and sha)
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.LOWERCASE_REPO }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=branch
+
+      - name: Build and push Docker image
         id: build-and-push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ steps.to-lower.outputs.repo_lowercase }}:latest
-            ghcr.io/${{ steps.to-lower.outputs.repo_lowercase }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Get short SHA
+        id: short-sha
+        run: echo "SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_OUTPUT
 
       - name: Run Trivy vulnerability scanner
-        id: trivy
-        continue-on-error: true # Prevent workflow failure if scan fails
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ghcr.io/${{ steps.to-lower.outputs.repo_lowercase }}:latest
+          image-ref: ${{ env.REGISTRY }}/${{ env.LOWERCASE_REPO }}:sha-${{ steps.short-sha.outputs.SHORT_SHA }}
           format: 'sarif'
           output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
 
-      - name: Upload Trivy scan results to GitHub Security tab
-        if: ${{ always() && steps.trivy.outcome == 'success' && exists('trivy-results.sarif') }}
+      - name: Upload Trivy scan results
         uses: github/codeql-action/upload-sarif@v2
+        if: always()
         with:
           sarif_file: 'trivy-results.sarif'
+
+      - name: Image digest
+        run: echo ${{ steps.build-and-push.outputs.digest }}
