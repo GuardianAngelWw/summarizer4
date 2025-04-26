@@ -19,36 +19,52 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import torch
 from dotenv import load_dotenv
-from flask import Flask
+from flask import Flask, jsonify
+import datetime
+import logging.handlers
 
+# Load environment variables first
+load_dotenv()
+
+# Configuration
+BOT_TOKEN = os.getenv("BOT_TOKEN") # Bot token should be provided via environment variable
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN environment variable not set. Please set it in .env file or environment.")
+    raise ValueError("BOT_TOKEN is required")
+
+ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
+ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",")] if ADMIN_USER_IDS else []
+ENTRIES_FILE = "entries.csv"
+CATEGORIES_FILE = "categories.json"
+CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
+
+# LLM Configuration
+MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # Changed to a summarization model
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Flask app initialization
 app = Flask(__name__)
 
-# Add these imports at the top of ollama_telegram_bot.py
-from flask import jsonify
-import datetime
-# Add these imports at the top
-import logging.handlers
-import datetime
-
-# Update logging configuration
+# Setup logging configuration
 log_file = os.path.join('logs', 'bot.log')
 os.makedirs('logs', exist_ok=True)
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(),
-        logging.handlers.RotatingFileHandler(
-            log_file,
-            maxBytes=10485760,  # 10MB
-            backupCount=5
-        )
-    ]
-)
+# Configure the root logger only once
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+        handlers=[
+            logging.StreamHandler(),
+            logging.handlers.RotatingFileHandler(
+                log_file,
+                maxBytes=10485760,  # 10MB
+                backupCount=5
+            )
+        ]
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +73,7 @@ logger.info(f"Bot starting at {datetime.datetime.utcnow().isoformat()}")
 logger.info(f"Running on device: {DEVICE}")
 logger.info(f"Model: {MODEL_NAME}")
 
-# Add these routes before the main() function
+# Flask routes for health monitoring
 @app.route('/health')
 def health_check():
     """Health check endpoint for container monitoring"""
@@ -75,31 +91,6 @@ def root():
         'status': 'running',
         'documentation': '/health for health check endpoint'
     }), 200
-
-# Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Load environment variables
-load_dotenv()
-
-# Configuration
-BOT_TOKEN = "6614402193:AAHusqefymCoD6teFgAAliL69cGStqV4vM0"
-
-# Admin user IDs (comma-separated in env var)
-ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
-ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",")] if ADMIN_USER_IDS else []
-
-# CSV file to store entries
-ENTRIES_FILE = "entries.csv"
-CATEGORIES_FILE = "categories.json"
-CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
-
-# LLM Configuration
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # Changed to a summarization model
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Log the model loading
 logger.info(f"Bot started with model: {MODEL_NAME} on device: {DEVICE}")
@@ -750,7 +741,7 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
         )
     return answer
 
-# Modify the generate_response function to handle causal language model output
+# Generate response using the causal language model
 async def generate_response(prompt: str, model, tokenizer) -> str:
     inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(model.device)
     outputs = model.generate(
@@ -762,6 +753,10 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
         temperature=0.7,
         num_return_sequences=1
     )
+    decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # Extract the response after the prompt
+    response = decoded_output[len(prompt):] if decoded_output.startswith(prompt) else decoded_output
+    return response.strip()
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
@@ -1159,8 +1154,26 @@ def main() -> None:
 if __name__ == "__main__":
     # Start Flask in a separate thread
     import threading
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080, debug=False)).start()
     
-    # Start the Telegram bot
+    def start_flask():
+        try:
+            # Try to use waitress for production deployment
+            try:
+                from waitress import serve
+                logger.info("Starting Flask server with waitress on port 8080")
+                serve(app, host="0.0.0.0", port=8080)
+            except ImportError:
+                # Fallback to Flask's built-in server
+                logger.info("Waitress not available, using Flask's built-in server on port 8080")
+                app.run(host="0.0.0.0", port=8080, debug=False)
+        except Exception as e:
+            logger.error(f"Failed to start Flask server: {e}")
+    
+    # Start Flask in a background thread
+    flask_thread = threading.Thread(target=start_flask)
+    flask_thread.daemon = True  # Thread will exit when main thread exits
+    flask_thread.start()
+    
+    # Start the Telegram bot in the main thread
     logger.info("Starting Summarizer2 Telegram Bot")
     main()
