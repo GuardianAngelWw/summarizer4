@@ -241,9 +241,10 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
 
 # Load the LLM model
 async def load_llm():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
     model = AutoModelForSeq2SeqLM.from_pretrained(
         MODEL_NAME,
+        trust_remote_code=True,  # Allow custom code execution
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device_map="auto"
     )
