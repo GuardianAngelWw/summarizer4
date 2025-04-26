@@ -9,6 +9,8 @@ on:
 env:
   REGISTRY: ghcr.io
   REPO_NAME: guardianangelww/summarizer4
+  CURRENT_DATE: "2025-04-26 15:05:39"
+  CURRENT_USER: "GuardianAngelWw"
 
 jobs:
   build-and-push:
@@ -19,6 +21,11 @@ jobs:
       security-events: write
 
     steps:
+      - name: Build Info
+        run: |
+          echo "Build started by: ${{ env.CURRENT_USER }}"
+          echo "Build date: ${{ env.CURRENT_DATE }}"
+
       - name: Checkout repository
         uses: actions/checkout@v3
 
@@ -64,11 +71,8 @@ jobs:
 
       - name: Store Trivy scan results
         if: always()
-        uses: actions/upload-artifact@v4  # Updated to v4
+        uses: actions/upload-artifact@v4
         with:
           name: trivy-results
           path: trivy-results.sarif
           retention-days: 5
-
-      - name: Print Image Digest
-        run: echo ${{ steps.docker_build.outputs.digest }}
