@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     git \
+    curl \  # Added for healthcheck
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
@@ -20,7 +21,11 @@ COPY ollama_telegram_bot.py .
 RUN touch entries.csv
 RUN mkdir -p /app/logs  # Create a directory for logs
 
-# Expose a port for containerized services (optional; adjust as needed)
+# Add healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Expose a port for containerized services
 EXPOSE 8080
 
 # Command to run the application
