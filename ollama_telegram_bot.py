@@ -26,24 +26,28 @@ from flask import Flask
 
 app = Flask(__name__)
 
-# Add this import at the top with your other imports
+# Add these imports at the top of ollama_telegram_bot.py
 from flask import jsonify
+import datetime
 
-# Add these routes to your Flask app
+# Add these routes before the main() function
 @app.route('/health')
 def health_check():
+    """Health check endpoint for container monitoring"""
     return jsonify({
         'status': 'healthy',
-        'version': '1.0.0',
-        'timestamp': datetime.datetime.utcnow().isoformat()
-    })
+        'timestamp': datetime.datetime.utcnow().isoformat(),
+        'version': '1.0.0'
+    }), 200
 
 @app.route('/')
 def root():
+    """Root endpoint with basic information"""
     return jsonify({
-        'message': 'Summarizer Bot is running',
-        'documentation': 'Add /health for health check endpoint'
-    })
+        'service': 'Summarizer Bot',
+        'status': 'running',
+        'documentation': '/health for health check endpoint'
+    }), 200
 
 # Configure logging
 logging.basicConfig(
