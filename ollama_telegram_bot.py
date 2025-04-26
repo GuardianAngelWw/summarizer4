@@ -269,8 +269,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         f"👋 Hi {user.mention_html()}! I'm Summarizer2, an AI-powered bot for managing knowledge entries.\n\n"
         "Available commands:\n"
-        "/ask <your question> - Ask a question about the stored entries\n"
-        "/here <your question> - Answer a question (when replying to someone)\n"
+        "/ask &lt;your question &gt; - Ask a question about the stored entries\n"
+        "/here &lt;your question &gt; - Answer a question (when replying to someone)\n"
     )
     
     if is_user_admin:
@@ -330,13 +330,13 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     try:
         # Load LLM components
-        await thinking_message.edit_text("Loading LLM model...")
+        await thinking_message.edit_text("🤔")
         
         llm_components = await load_llm()
         model = llm_components["model"]
         tokenizer = llm_components["tokenizer"]
         
-        await thinking_message.edit_text("Processing your question with the LLM...")
+        await thinking_message.edit_text("⚡")
         
         # Create context from entries with categories
         context_entries = []
@@ -347,37 +347,40 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         context_text = "\n\n".join(context_entries)
         
-        prompt = f"""You are Summarizer2, a helpful AI assistant that answers questions based on a knowledge base.
+        prompt = f"""Answer the following question briefly and clearly using the provided knowledge base. Do not repeat the question or include instructions in your response.
         
-        Question: "{question}"
+        Question: {question}
         
         Knowledge Base:
         {context_text}
-        
-        Instructions:
-        - Provide a detailed answer in max 50 words, as a single paragraph (no line breaks).
-        - Hyperlink the most relevant source using Telegram markdown ([text](url)).
-        - If the knowledge base does not contain relevant info, say so politely.
         """
         #Generate response
         pipe = pipeline(
             "text-generation",
             model=model,
             tokenizer=tokenizer,
-            max_length=1024,
+            max_length=200,  # Limit output length
+            temperature=0.7,  # Balance between randomness and focus
+            top_p=0.9,       # Focus on likely tokens
+            stop=["\n"],      # Stop generation at a newline (if supported)
             do_sample=True,
-            temperature=0.7,  # Add some creativity but keep focused
-            top_p=0.9,        # Focus on more likely tokens
         )
         
         result = pipe(prompt)[0]["generated_text"]
         
-        # Extract the actual answer (remove the prompt)
-        answer_parts = result.split("Please provide a detailed answer")
-        if len(answer_parts) > 1:
-            answer = answer_parts[1]
-        else:
-            answer = result[len(prompt):]
+        # Attempt to extract the answer based on the expected format
+        try:
+            # Remove the prompt from the generated text
+            answer_start = result.find("Question:") + len("Question:")
+            answer = result[answer_start:].strip()
+            
+            # Look for the "Instructions" section and remove it if present
+            instructions_index = answer.find("Instructions:")
+            if instructions_index != -1:
+                answer = answer[:instructions_index].strip()
+        except Exception as e:
+            logger.error(f"Error extracting answer: {str(e)}")
+            answer = "I couldn't extract a proper response based on the available knowledge."
         
         # Clean up the answer
         if not answer.strip():
