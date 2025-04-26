@@ -9,8 +9,8 @@ on:
 env:
   REGISTRY: ghcr.io
   REPO_NAME: guardianangelww/summarizer4
-  CURRENT_DATE: ${{ github.event.repository.updated_at }}
-  CURRENT_USER: ${{ github.actor }}
+  CURRENT_DATE: "2025-04-26 18:40:18"  # Updated to your current time
+  CURRENT_USER: "GuardianAngelWw"      # Updated to your username
 
 jobs:
   build-and-push:
@@ -19,8 +19,6 @@ jobs:
       contents: read
       packages: write
       security-events: write
-      actions: read    # Added for better integration access
-      id-token: write # Added for better security scanning integration
 
     steps:
       - name: Build Info
@@ -58,24 +56,17 @@ jobs:
         continue-on-error: true
         with:
           image-ref: '${{ env.REGISTRY }}/${{ env.REPO_NAME }}:latest'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
+          format: 'table'        # Changed from SARIF to table format
+          output: 'trivy-results.txt'  # Changed from SARIF to text file
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
           scanners: 'vuln'
 
-      - name: Upload scan results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3  # Updated from v2 to v3
-        if: always()
-        with:
-          sarif_file: trivy-results.sarif
-          wait-for-processing: true
-          category: 'trivy'  # Added to better categorize the results
-
+      # Store scan results as artifacts
       - name: Store Trivy scan results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-results
-          path: trivy-results.sarif
+          path: trivy-results.txt
           retention-days: 5
