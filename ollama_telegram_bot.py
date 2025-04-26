@@ -245,19 +245,15 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
+# Load the LLM model
 async def load_llm():
-    """Load the LLM model."""
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
         device_map="auto"
     )
-    
-    return {
-        "model": model,
-        "tokenizer": tokenizer,
-    }
+    return {"model": model, "tokenizer": tokenizer}
 
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -354,33 +350,29 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         Knowledge Base:
         {context_text}
         """
-        #Generate response
-        pipe = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            max_length=200,  # Limit output length
-            temperature=0.7,  # Balance between randomness and focus
-            top_p=0.9,       # Focus on likely tokens
-            stop=["\n"],      # Stop generation at a newline (if supported)
-            do_sample=True,
-        )
+        # Generate concise and deterministic answers
+        async def generate_response(prompt: str, model, tokenizer) -> str:
+            pipe = pipeline(
+                "text-generation",
+                model=model,
+                tokenizer=tokenizer,
+                max_length=200,  # Limit output length for concise responses
+                temperature=0,   # Deterministic output
+                top_p=1.0,       # Focus on the most likely tokens
+            )
+            result = pipe(prompt)[0]["generated_text"]
         
-        result = pipe(prompt)[0]["generated_text"]
-        
-        # Attempt to extract the answer based on the expected format
-        try:
-            # Remove the prompt from the generated text
-            answer_start = result.find("Question:") + len("Question:")
-            answer = result[answer_start:].strip()
-            
-            # Look for the "Instructions" section and remove it if present
-            instructions_index = answer.find("Instructions:")
-            if instructions_index != -1:
-                answer = answer[:instructions_index].strip()
-        except Exception as e:
-            logger.error(f"Error extracting answer: {str(e)}")
-            answer = "I couldn't extract a proper response based on the available knowledge."
+            # Extract the answer without the prompt
+            try:
+                answer_start = result.find("Question:") + len("Question:")
+                answer = result[answer_start:].strip()
+                instructions_index = answer.find("Instructions:")
+                if instructions_index != -1:
+                    answer = answer[:instructions_index].strip()
+                return answer
+            except Exception as e:
+                logger.error(f"Error extracting answer: {str(e)}")
+                return "I couldn't generate a proper answer based on the knowledge base."
         
         # Clean up the answer
         if not answer.strip():
@@ -717,65 +709,74 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("Operation canceled.")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Answer a question using the LLM and knowledge base."""
     question = " ".join(context.args)
-    
     if not question:
         await update.message.reply_text(
             "Please provide a question after the /ask command. For example:\n"
-            "/ask What are the main features of Summarizer2?"
+            "/ask What are the main features of helpbot?"
         )
         return
-    
+
     # Send initial thinking message
     thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
-    
-    # Determine group ID for group-specific entries if in a group chat
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Get entries for context - specific to this group if in a group chat
+
+    # Load knowledge base
+    group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
     entries = read_entries(group_id=group_id)
-    
     if not entries:
         await thinking_message.delete()
         await update.message.reply_text("No knowledge entries found to answer your question.")
         return
-    
+
+    # Build context and prompt
+    context_entries = "\n\n".join(
+        f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
+    )
+    prompt = build_prompt(question, context_entries)
+
+    # Generate response
     try:
-        # Load LLM components
-        await thinking_message.edit_text("Loading LLM model...")
-        
         llm_components = await load_llm()
-        model = llm_components["model"]
-        tokenizer = llm_components["tokenizer"]
-        
-        await thinking_message.edit_text("Processing your question with the LLM...")
-        
-        # Create context from entries with categories
-        context_entries = []
-        for entry in entries:
-            category = entry.get("category", "General")
-            entry_text = f"Category: {category}\nEntry: {entry['text']}\nSource: {entry['link']}"
-            context_entries.append(entry_text)
-        
-        context_text = "\n\n".join(context_entries)
-        
-        # Formulate an improved prompt
-        prompt = f"""You are Summarizer2, a helpful AI assistant that answers questions based on a knowledge base.
+        answer = await generate_response(prompt, llm_components["model"], llm_components["tokenizer"])
 
-Question: "{question}"
+        # Add hyperlinks
+        keywords = {entry["text"]: entry["link"] for entry in entries}
+        final_answer = add_hyperlinks(answer, keywords)
 
-Knowledge Base:
-{context_text}
-
-Please provide a detailed answer to the question based only on the information in the knowledge base. 
-If the knowledge base doesn't contain relevant information to answer the question, say so politely.
-Include relevant source links at the end of your response.
-Organize the answer in a clear, easy-to-read format.
-"""
+        # Send final response
+        await thinking_message.delete()
+        await update.message.reply_html(f"Question: {question}\n\n{final_answer}")
+    except Exception as e:
+        logger.error(f"Error generating response: {str(e)}")
+        await thinking_message.delete()
+        await update.message.reply_text("An error occurred while processing your question.")
         
+        def build_prompt(question: str, context_text: str) -> str:
+            return f"""You are Summarizer2, an AI assistant. Based on the provided knowledge base, answer the question briefly in no more than 50 words. 
+        Include a hyperlink in Telegram markdown ([text](url)) for the most relevant source, and do not hallucinate information.
+        
+        Question: {question}
+        
+        Knowledge Base:
+        {context_text}
+        """
+        def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
+            """
+            Replace keywords with Telegram markdown links in the answer.
+        
+            :param answer: The generated answer text.
+            :param keywords: A dictionary of keywords and their corresponding URLs.
+            :return: Updated answer with hyperlinks.
+            """
+            for word, url in keywords.items():
+                # Replace only the full word or part of word with the hyperlink
+                answer = re.sub(
+                    rf"(?<!\w)({re.escape(word)})(?!\w)",  # Match word boundaries to replace only intended parts
+                    f"[\\1]({url})",  # Telegram markdown format
+                    answer
+                )
+            return answer
+                
         # Generate response
         pipe = pipeline(
             "text-generation",
