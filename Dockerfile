@@ -20,8 +20,8 @@ RUN apt-get update && \
 
 # Copy and install requirements
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip cache purge
+# Remove --no-cache-dir since we're managing cache with environment variables
+RUN pip install -r requirements.txt
 
 # Setup user and directories
 RUN useradd -m -r botuser && \
