@@ -3,12 +3,13 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && \
+    apt-get install -y \
     gcc \
     g++ \
     git \
-    curl \  # Added for healthcheck
-    && rm -rf /var/lib/apt/lists/*
+    curl && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
@@ -18,8 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ollama_telegram_bot.py .
 
 # Ensure we have a directory for the entries file
-RUN touch entries.csv
-RUN mkdir -p /app/logs  # Create a directory for logs
+RUN touch entries.csv && \
+    mkdir -p /app/logs
 
 # Add healthcheck
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
