@@ -25,13 +25,6 @@ from flask import Flask
 
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Service is running!"
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)  # Ensure host is 0.0.0.0 and port is specified
-
 # Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -42,7 +35,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Configuration
-BOT_TOKEN = "6614402193:AAFm04CKorvjOeFrntJwkkqKygt1h2PGxQs"
+BOT_TOKEN = "6614402193:AAHVcn0TXbVpSJry0yyzT5NCh2FdBTbSFhM"
 
 # Admin user IDs (comma-separated in env var)
 ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
@@ -343,46 +336,20 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         context_text = "\n\n".join(context_entries)
         
-        prompt = f"""Answer the following question briefly and clearly using the provided knowledge base. Do not repeat the question or include instructions in your response.
+        prompt = build_prompt(question, context_text)
         
-        Question: {question}
+        # Generate response
+        answer = await generate_response(prompt, model, tokenizer)
         
-        Knowledge Base:
-        {context_text}
-        """
-        # Generate concise and deterministic answers
-        async def generate_response(prompt: str, model, tokenizer) -> str:
-            pipe = pipeline(
-                "text-generation",
-                model=model,
-                tokenizer=tokenizer,
-                max_length=200,  # Limit output length for concise responses
-                temperature=0,   # Deterministic output
-                top_p=1.0,       # Focus on the most likely tokens
-            )
-            result = pipe(prompt)[0]["generated_text"]
-        
-            # Extract the answer without the prompt
-            try:
-                answer_start = result.find("Question:") + len("Question:")
-                answer = result[answer_start:].strip()
-                instructions_index = answer.find("Instructions:")
-                if instructions_index != -1:
-                    answer = answer[:instructions_index].strip()
-                return answer
-            except Exception as e:
-                logger.error(f"Error extracting answer: {str(e)}")
-                return "I couldn't generate a proper answer based on the knowledge base."
-        
-        # Clean up the answer
-        if not answer.strip():
-            answer = "I couldn't generate a proper response based on the available knowledge."
+        # Add hyperlinks to the answer
+        keywords = {entry["text"]: entry["link"] for entry in entries}
+        final_answer = add_hyperlinks(answer, keywords)
         
         # Send response to the replied user
         await thinking_message.delete()
         await replied_msg.reply_text(
-            f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{answer}",
-            parse_mode=ParseMode.MARKDOWN
+            f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{final_answer}",
+            parse_mode=ParseMode.HTML
         )
         
         # Delete the original command message
@@ -708,12 +675,63 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     elif data == "cancel_clear":
         await query.edit_message_text("Operation canceled.")
 
+# Helper functions for ask_question
+def build_prompt(question: str, context_text: str) -> str:
+    return f"""You are Summarizer2, an AI assistant. Based on the provided knowledge base, answer the question briefly in no more than 50 words. 
+    Include a hyperlink in Telegram markdown ([text](url)) for the most relevant source, and do not hallucinate information.
+    
+    Question: {question}
+    
+    Knowledge Base:
+    {context_text}
+    """
+
+def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
+    """
+    Replace keywords with Telegram markdown links in the answer.
+
+    :param answer: The generated answer text.
+    :param keywords: A dictionary of keywords and their corresponding URLs.
+    :return: Updated answer with hyperlinks.
+    """
+    for word, url in keywords.items():
+        # Replace only the full word or part of word with the hyperlink
+        answer = re.sub(
+            rf"(?<!\w)({re.escape(word)})(?!\w)",  # Match word boundaries to replace only intended parts
+            f"[\\1]({url})",  # Telegram markdown format
+            answer
+        )
+    return answer
+
+async def generate_response(prompt: str, model, tokenizer) -> str:
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        max_length=200,  # Limit output length for concise responses
+        temperature=0,   # Deterministic output
+        top_p=1.0,       # Focus on the most likely tokens
+    )
+    result = pipe(prompt)[0]["generated_text"]
+
+    # Extract the answer without the prompt
+    try:
+        answer_start = result.find("Question:") + len("Question:")
+        answer = result[answer_start:].strip()
+        instructions_index = answer.find("Instructions:")
+        if instructions_index != -1:
+            answer = answer[:instructions_index].strip()
+        return answer
+    except Exception as e:
+        logger.error(f"Error extracting answer: {str(e)}")
+        return "I couldn't generate a proper answer based on the knowledge base."
+
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
     if not question:
         await update.message.reply_text(
             "Please provide a question after the /ask command. For example:\n"
-            "/ask What are the main features of helpbot?"
+            "/ask What are the main features of Summarizer2?"
         )
         return
 
@@ -750,70 +768,6 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
         await update.message.reply_text("An error occurred while processing your question.")
-        
-        def build_prompt(question: str, context_text: str) -> str:
-            return f"""You are Summarizer2, an AI assistant. Based on the provided knowledge base, answer the question briefly in no more than 50 words. 
-        Include a hyperlink in Telegram markdown ([text](url)) for the most relevant source, and do not hallucinate information.
-        
-        Question: {question}
-        
-        Knowledge Base:
-        {context_text}
-        """
-        def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
-            """
-            Replace keywords with Telegram markdown links in the answer.
-        
-            :param answer: The generated answer text.
-            :param keywords: A dictionary of keywords and their corresponding URLs.
-            :return: Updated answer with hyperlinks.
-            """
-            for word, url in keywords.items():
-                # Replace only the full word or part of word with the hyperlink
-                answer = re.sub(
-                    rf"(?<!\w)({re.escape(word)})(?!\w)",  # Match word boundaries to replace only intended parts
-                    f"[\\1]({url})",  # Telegram markdown format
-                    answer
-                )
-            return answer
-                
-        # Generate response
-        pipe = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            max_length=1024,
-            temperature=0.7,  # Add some creativity but keep focused
-            top_p=0.9,        # Focus on more likely tokens
-        )
-        
-        result = pipe(prompt)[0]["generated_text"]
-        
-        # Extract the actual answer (remove the prompt)
-        answer_parts = result.split("Please provide a detailed answer")
-        if len(answer_parts) > 1:
-            answer = answer_parts[1]
-        else:
-            answer = result[len(prompt):]
-        
-        # Clean up the answer
-        if not answer.strip():
-            answer = "I couldn't generate a proper response based on the available knowledge."
-        
-        # Send response
-        await thinking_message.delete()
-        await update.message.reply_text(
-            f"Question: {question}\n\n{answer}",
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
-    except Exception as e:
-        logger.error(f"Error generating LLM response: {str(e)}")
-        await thinking_message.delete()
-        await update.message.reply_text(
-            f"Sorry, I encountered an error while processing your question.\n"
-            f"Error: {str(e)[:100]}..."
-        )
 
 @admin_only
 async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1158,4 +1112,10 @@ def main() -> None:
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    # Start Flask in a separate thread
+    import threading
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080, debug=False)).start()
+    
+    # Start the Telegram bot
+    logger.info("Starting Summarizer2 Telegram Bot")
     main()
