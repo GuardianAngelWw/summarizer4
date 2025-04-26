@@ -30,8 +30,7 @@ RUN useradd -m -r botuser && \
     chown -R botuser:botuser /app
 
 # Copy application files
-COPY --chown=botuser:botuser ollama_telegram_bot.py .env.sample ./
-RUN cp .env.sample .env
+COPY --chown=botuser:botuser ollama_telegram_bot.py .env ./
 
 # Switch to non-root user
 USER botuser
