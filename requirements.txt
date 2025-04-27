@@ -9,6 +9,7 @@ protobuf>=3.20.0
 flask>=2.2.0
 waitress>=2.1.2
 pytz>=2024.1  # Added for timezone support
+nest_asyncio
 
 # Additional utilities
 tqdm>=4.64.0
