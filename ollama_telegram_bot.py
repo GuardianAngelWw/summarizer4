@@ -27,6 +27,111 @@ from flask import Flask, jsonify
 import datetime
 import logging.handlers
 
+import asyncio
+from datetime import datetime
+import pytz
+from telegram import Update
+from telegram.ext import Application, ContextTypes
+import logging
+
+# Add these constants at the top of your file
+STARTUP_MESSAGE = """
+🤖 Bot Status Update 🤖
+Status: Online ✅
+Time: {}
+Version: {}
+Environment: GitHub Actions
+"""
+
+SHUTDOWN_MESSAGE = """
+🤖 Bot Status Update 🤖
+Status: Offline ⛔
+Time: {}
+Reason: {}
+"""
+
+HEALTH_CHECK_MESSAGE = """
+🏥 Health Check Report 🏥
+Status: {}
+Time: {}
+Memory Usage: {:.2f}MB
+Uptime: {}
+Active Users: {}
+"""
+
+class BotStatusMonitor:
+    def __init__(self, bot_token: str, admin_ids: list[int]):
+        self.bot_token = bot_token
+        self.admin_ids = admin_ids
+        self.start_time = datetime.now(pytz.UTC)
+        self.active_users = set()
+        self.version = "2025.04.27"  # Update this with your version
+
+    async def send_to_admins(self, message: str):
+        """Send a message to all admin users."""
+        app = Application.builder().token(self.bot_token).build()
+        for admin_id in self.admin_ids:
+            try:
+                await app.bot.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                logging.error(f"Failed to send status to admin {admin_id}: {e}")
+        await app.shutdown()
+
+    def get_memory_usage(self):
+        """Get current memory usage in MB."""
+        import psutil
+        process = psutil.Process()
+        return process.memory_info().rss / 1024 / 1024
+
+    def get_uptime(self):
+        """Get bot uptime in human readable format."""
+        delta = datetime.now(pytz.UTC) - self.start_time
+        days = delta.days
+        hours, remainder = divmod(delta.seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{days}d {hours}h {minutes}m {seconds}s"
+
+    async def send_startup_notification(self):
+        """Send startup notification to admins."""
+        message = STARTUP_MESSAGE.format(
+            datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S"),
+            self.version
+        )
+        await self.send_to_admins(message)
+
+    async def send_shutdown_notification(self, reason: str = "Planned Shutdown"):
+        """Send shutdown notification to admins."""
+        message = SHUTDOWN_MESSAGE.format(
+            datetime.now(pytz.UTC).strftime("%Y-%m-
+
+%d %H:%M:%S"),
+            reason
+        )
+        await self.send_to_admins(message)
+
+    async def send_health_check(self):
+        """Send health check status to admins."""
+        status = "Healthy ✅"
+        try:
+            # Add your health checks here
+            # For example, check database connection, API status, etc.
+            pass
+        except Exception as e:
+            status = f"Warning ⚠️\nError: {str(e)}"
+
+        message = HEALTH_CHECK_MESSAGE.format(
+            status,
+            datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S"),
+            self.get_memory_usage(),
+            self.get_uptime(),
+            len(self.active_users)
+        )
+        await self.send_to_admins(message)
+
 # Load environment variables first
 load_dotenv()
 
@@ -1182,43 +1287,84 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         logger.error(f"Error handling CSV action: {str(e)}")
         await query.edit_message_text(f"Error: {str(e)}")
 
-def main() -> None:
+# Modify your main function to use the status monitor
+async def main():
     """Start the bot."""
-    # Create the Application
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # Standard command handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", start))
-    application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
-    application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
-    application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
-    application.add_handler(CommandHandler("download", download_csv))  # Admin-only
-    application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
-    application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
-    application.add_handler(CommandHandler("here", here_command))  # Available to all users
-    application.add_handler(CommandHandler("logs", show_logs))  # New logs command
-
-    # Enhanced callback query handlers
-    application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
-    application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
-    application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cat:"))
-    application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
-    application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
-    application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
-    application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
-
-    # Document handler for CSV upload - more permissive to handle different formats
-    application.add_handler(
-        MessageHandler(
-            (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
-            filters.REPLY, 
-            handle_csv_upload
+    # Load environment variables
+    load_dotenv()
+    
+    # Initialize bot token and admin IDs
+    bot_token = os.getenv("BOT_TOKEN")
+    admin_ids = [int(id.strip()) for id in os.getenv("ADMIN_USER_IDS", "").split(",") if id.strip()]
+    
+    # Initialize status monitor
+    status_monitor = BotStatusMonitor(bot_token, admin_ids)
+    
+    # Send startup notification
+    await status_monitor.send_startup_notification()
+    
+    try:
+        # Initialize your application
+        application = Application.builder().token(bot_token).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        # ... other handlers ...
+        # Standard command handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", start))
+        application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
+        application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
+        application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
+        application.add_handler(CommandHandler("download", download_csv))  # Admin-only
+        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
+        application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
+        application.add_handler(CommandHandler("here", here_command))  # Available to all users
+        application.add_handler(CommandHandler("logs", show_logs))  # New logs command
+    
+        # Enhanced callback query handlers
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cat:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
+        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
+    
+        # Document handler for CSV upload - more permissive to handle different formats
+        application.add_handler(
+            MessageHandler(
+                (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
+                filters.REPLY, 
+                handle_csv_upload
+            )
         )
-    )
+    
+        # Start the Bot
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+        # Start health check server
+        health_thread = threading.Thread(target=run_health_server, daemon=True)
+        health_thread.start()
+        
+        # Schedule periodic health checks
+        async def periodic_health_check():
+            while True:
+                await status_monitor.send_health_check()
+                await asyncio.sleep(3600)  # Check every hour
+        
+        asyncio.create_task(periodic_health_check())
+        
+        # Run the bot
+        await application.run_polling()
+    except Exception as e:
+        # Send shutdown notification with error
+        await status_monitor.send_shutdown_notification(f"Error: {str(e)}")
+        raise
+    finally:
+        # Send shutdown notification
+        await status_monitor.send_shutdown_notification()
 
-    # Start the Bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     # Start Flask in a separate thread
