@@ -21,10 +21,12 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode, ChatType
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 import torch
 from flask import Flask, jsonify
 import logging.handlers
+import waitress
+import threading
 
 # No need for duplicate imports as they're already defined above
 
@@ -153,10 +155,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN") # Bot token should be provided via environment variable
-if not BOT_TOKEN:
-    logger.error("BOT_TOKEN environment variable not set. Please set it in .env file or environment.")
-    raise ValueError("BOT_TOKEN is required")
+BOT_TOKEN = "6614402193:AAFC1AAA-kXHGBvLM4NuJitscOdk5whThGQ" # Bot token should be provided via environment variable
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -411,7 +410,7 @@ async def load_llm():
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
         logger.info("Tokenizer loaded successfully")
         
-        model = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForSeq2SeqLM.from_pretrained(
             MODEL_NAME,
             trust_remote_code=True,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
@@ -903,24 +902,26 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
         ).to(model.device)
         
         logger.info("Generating response...")
+        # Modified for Seq2Seq models like T5
         outputs = model.generate(
-            inputs["input_ids"],
-            max_length=200,  # Increased for more detailed responses
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask", None),
+            max_length=200,
             min_length=30,
             do_sample=True,
-            top_p=0.95,     # Slightly increased for better creativity
+            top_p=0.95,
             temperature=0.7,
             num_return_sequences=1,
-            pad_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.pad_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            max_time=30.0,  # 30 second timeout
-            repetition_penalty=1.2  # Prevent repetitive text
+            max_time=30.0,
+            repetition_penalty=1.2
         )
         
         logger.info("Decoding response...")
+        # For T5, we don't need to strip the prompt as it's a true seq2seq model
         decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        response = decoded_output[len(prompt):] if decoded_output.startswith(prompt) else decoded_output
-        return response.strip()
+        return decoded_output.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
@@ -1285,10 +1286,13 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def main():
     """Start the bot."""
     # Load environment variables
-    load_dotenv()
+    load_dotenv(dotenv_path='.env', override=True)
+    
+    # Set a different port to avoid conflicts
+    os.environ['PORT'] = '8085'
     
     # Initialize bot token and admin IDs
-    bot_token = os.getenv("BOT_TOKEN")
+    bot_token = BOT_TOKEN
     admin_ids = [int(id.strip()) for id in os.getenv("ADMIN_USER_IDS", "").split(",") if id.strip()]
     
     # Initialize status monitor
@@ -1335,9 +1339,16 @@ async def main():
         )
     
         # Start the Bot
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-        
         # Start health check server
+        def run_health_server():
+            try:
+                port = int(os.getenv('PORT', '8080'))
+                host = '0.0.0.0'
+                logger.info(f"Starting Flask server with waitress on port {port}")
+                waitress.serve(app, host=host, port=port)
+            except Exception as e:
+                logger.error(f"Failed to start Flask server: {str(e)}")
+        
         health_thread = threading.Thread(target=run_health_server, daemon=True)
         health_thread.start()
         
@@ -1350,7 +1361,7 @@ async def main():
         asyncio.create_task(periodic_health_check())
         
         # Run the bot
-        await application.run_polling()
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         # Send shutdown notification with error
         await status_monitor.send_shutdown_notification(f"Error: {str(e)}")
@@ -1361,28 +1372,28 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Start Flask in a separate thread
     import threading
+    import nest_asyncio
     
-    def start_flask():
-        try:
-            # Try to use waitress for production deployment
-            try:
-                from waitress import serve
-                logger.info("Starting Flask server with waitress on port 8080")
-                serve(app, host="0.0.0.0", port=8080)
-            except ImportError:
-                # Fallback to Flask's built-in server
-                logger.info("Waitress not available, using Flask's built-in server on port 8080")
-                app.run(host="0.0.0.0", port=8080, debug=False)
-        except Exception as e:
-            logger.error(f"Failed to start Flask server: {e}")
+    # Apply nest_asyncio to allow nested event loops
+    nest_asyncio.apply()
     
-    # Start Flask in a background thread
-    flask_thread = threading.Thread(target=start_flask)
-    flask_thread.daemon = True  # Thread will exit when main thread exits
-    flask_thread.start()
+    # Set a flag to track if the bot is running
+    bot_running = True
     
     # Start the Telegram bot in the main thread
     logger.info("Starting Summarizer2 Telegram Bot")
-    asyncio.run(main())
+    
+    try:
+        # Create and get event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Run the main function
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+        bot_running = False
+    except Exception as e:
+        logger.error(f"Error in main thread: {e}")
+        bot_running = False
