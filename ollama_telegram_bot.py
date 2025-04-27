@@ -10,6 +10,7 @@ from functools import wraps
 from collections import deque
 from datetime import datetime
 import pytz
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember, Chat
 from telegram.ext import (
     Application, 
@@ -22,17 +23,10 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
-from dotenv import load_dotenv
 from flask import Flask, jsonify
-import datetime
 import logging.handlers
 
-import asyncio
-from datetime import datetime
-import pytz
-from telegram import Update
-from telegram.ext import Application, ContextTypes
-import logging
+# No need for duplicate imports as they're already defined above
 
 # Add these constants at the top of your file
 STARTUP_MESSAGE = """
@@ -136,6 +130,11 @@ load_dotenv()
 # Add a deque to store the last 10 log messages
 last_logs = deque(maxlen=10)
 
+# Setup log file
+# Ensure logs directory exists
+os.makedirs('logs', exist_ok=True)
+log_file = os.path.join('logs', 'bot.log')
+
 # Custom log handler to capture logs in memory
 class MemoryLogHandler(logging.Handler):
     def emit(self, record):
@@ -149,6 +148,9 @@ class MemoryLogHandler(logging.Handler):
             last_logs.append(formatted_msg)
         except Exception:
             self.handleError(record)
+
+# Initialize logger first
+logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN") # Bot token should be provided via environment variable
@@ -173,8 +175,6 @@ if not logging.getLogger().handlers:
         ]
     )
 
-logger = logging.getLogger(__name__)
-
 # Update the env variables (around line 37)
 ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
 ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",")] if ADMIN_USER_IDS else []
@@ -190,10 +190,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
 app = Flask(__name__)
-
-# Setup logging configuration
-log_file = os.path.join('logs', 'bot.log')
-os.makedirs('logs', exist_ok=True)
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
