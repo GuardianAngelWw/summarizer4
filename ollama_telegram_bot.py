@@ -81,8 +81,8 @@ ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
-# Change the model to a smaller one
-MODEL_NAME = "google/flan-t5-small"  # Much smaller model, around 80M parameters
+# Update the model configuration (around line 44)
+MODEL_NAME = "google/flan-t5-large"  # Better performance for Q&A and summarization
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
@@ -792,24 +792,30 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
         )
     return answer
 
-# Update the error handling in generate_response
 async def generate_response(prompt: str, model, tokenizer) -> str:
     try:
         logger.info("Tokenizing input...")
-        inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(model.device)
+        inputs = tokenizer(
+            prompt, 
+            return_tensors="pt", 
+            max_length=1024, 
+            truncation=True,
+            padding=True
+        ).to(model.device)
         
         logger.info("Generating response...")
         outputs = model.generate(
             inputs["input_ids"],
-            max_length=150,
+            max_length=200,  # Increased for more detailed responses
             min_length=30,
             do_sample=True,
-            top_p=0.9,
+            top_p=0.95,     # Slightly increased for better creativity
             temperature=0.7,
             num_return_sequences=1,
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            max_time=30.0
+            max_time=30.0,  # 30 second timeout
+            repetition_penalty=1.2  # Prevent repetitive text
         )
         
         logger.info("Decoding response...")
@@ -817,9 +823,8 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
         response = decoded_output[len(prompt):] if decoded_output.startswith(prompt) else decoded_output
         return response.strip()
     except Exception as e:
-        safe_error = format_error_for_user(e)
-        logger.error(f"Error in generate_response: {safe_error}")
-        raise RuntimeError(f"Failed to generate response: {safe_error}")
+        logger.error(f"Error in generate_response: {str(e)}")
+        raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
