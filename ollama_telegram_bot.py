@@ -1385,4 +1385,4 @@ if __name__ == "__main__":
     
     # Start the Telegram bot in the main thread
     logger.info("Starting Summarizer2 Telegram Bot")
-    main()
+    asyncio.run(main())
