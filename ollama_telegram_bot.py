@@ -280,16 +280,26 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
-# Modify the load_llm function
+# Modify the load_llm function around line 284
 async def load_llm():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        trust_remote_code=True,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto"
-    )
-    return {"model": model, "tokenizer": tokenizer}
+    try:
+        logger.info(f"Loading model {MODEL_NAME}...")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+        logger.info("Tokenizer loaded successfully")
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            trust_remote_code=True,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto",
+            # Add low_cpu_mem_usage=True for better memory management
+            low_cpu_mem_usage=True
+        )
+        logger.info(f"Model loaded successfully on device: {model.device}")
+        return {"model": model, "tokenizer": tokenizer}
+    except Exception as e:
+        logger.error(f"Error loading model: {str(e)}")
+        raise
 
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -741,22 +751,34 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
         )
     return answer
 
-# Generate response using the causal language model
 async def generate_response(prompt: str, model, tokenizer) -> str:
-    inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(model.device)
-    outputs = model.generate(
-        inputs["input_ids"],
-        max_length=150,
-        min_length=30,
-        do_sample=True,
-        top_p=0.9,
-        temperature=0.7,
-        num_return_sequences=1
-    )
-    decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    # Extract the response after the prompt
-    response = decoded_output[len(prompt):] if decoded_output.startswith(prompt) else decoded_output
-    return response.strip()
+    try:
+        logger.info("Tokenizing input...")
+        inputs = tokenizer(prompt, return_tensors="pt", max_length=1024, truncation=True).to(model.device)
+        
+        logger.info("Generating response...")
+        outputs = model.generate(
+            inputs["input_ids"],
+            max_length=150,
+            min_length=30,
+            do_sample=True,
+            top_p=0.9,
+            temperature=0.7,
+            num_return_sequences=1,
+            # Add safety parameters
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+            # Add timeout
+            max_time=30.0  # 30 seconds timeout
+        )
+        
+        logger.info("Decoding response...")
+        decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        response = decoded_output[len(prompt):] if decoded_output.startswith(prompt) else decoded_output
+        return response.strip()
+    except Exception as e:
+        logger.error(f"Error in generate_response: {str(e)}")
+        raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
