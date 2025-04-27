@@ -185,7 +185,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration (around line 44)
-MODEL_NAME = "deepset/roberta-base-squad2"  # Better performance for Q&A and summarization
+MODEL_NAME = "microsoft/bitnet-b1.58-2B-4T"  # Better performance for Q&A and summarization
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
