@@ -1,19 +1,22 @@
-name: Docker CI/CD
+name: Bot Deployment
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch: # Allow manual triggering
+  schedule:
+    - cron: '0 */6 * * *' # Run every 6 hours to ensure uptime
 
 env:
   REGISTRY: ghcr.io
   REPO_NAME: guardianangelww/summarizer4
-  CURRENT_DATE: "2025-04-26 18:40:18"  # Updated to your current time
-  CURRENT_USER: "GuardianAngelWw"      # Updated to your username
+  CURRENT_DATE: "2025-04-27 10:02:59"  # Updated to current UTC time
+  CURRENT_USER: "GuardianAngelWw"      # Updated to current username
 
 jobs:
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -29,40 +32,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          python-version: '3.10'
+          cache: 'pip'
 
-      - name: Build and push Docker image
-        id: docker_build
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.REPO_NAME }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         continue-on-error: true
         with:
-          image-ref: '${{ env.REGISTRY }}/${{ env.REPO_NAME }}:latest'
-          format: 'table'        # Changed from SARIF to table format
-          output: 'trivy-results.txt'  # Changed from SARIF to text file
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          output: 'trivy-results.txt'
           severity: 'CRITICAL,HIGH'
           timeout: '10m'
           scanners: 'vuln'
 
-      # Store scan results as artifacts
       - name: Store Trivy scan results
         if: always()
         uses: actions/upload-artifact@v4
@@ -70,3 +62,96 @@ jobs:
           name: trivy-results
           path: trivy-results.txt
           retention-days: 5
+
+  run-bot:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    
+    # Set timeout to maximum allowed by GitHub Actions
+    timeout-minutes: 340 # Just under 6 hours to allow for cleanup
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create logs directory
+        run: mkdir -p logs
+
+      - name: Run bot with monitoring
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
+          PYTHONUNBUFFERED: 1
+        run: |
+          # Function to check if port 8080 is in use
+          check_port() {
+            nc -z localhost 8080 2>/dev/null
+            return $?
+          }
+
+          # Function to check bot health
+          check_health() {
+            curl -sf http://localhost:8080/health >/dev/null 2>&1
+            return $?
+          }
+
+          # Start bot with monitoring
+          {
+            python ollama_telegram_bot.py &
+            BOT_PID=$!
+            
+            # Wait for bot to start
+            sleep 10
+            
+            # Monitor bot process
+            while true; do
+              if ! ps -p $BOT_PID > /dev/null; then
+                echo "Bot process died, restarting..."
+                python ollama_telegram_bot.py &
+                BOT_PID=$!
+                sleep 10
+              fi
+              
+              if ! check_port || ! check_health; then
+                echo "Health check failed, restarting bot..."
+                kill $BOT_PID 2>/dev/null || true
+                python ollama_telegram_bot.py &
+                BOT_PID=$!
+                sleep 10
+              fi
+              
+              sleep 30
+            done
+          } 2>&1 | tee -a logs/bot.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs
+          path: logs/
+          retention-days: 5
+
+  cleanup-old-workflows:
+    needs: [build, run-bot]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 1
+          keep_minimum_runs: 3
