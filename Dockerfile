@@ -6,7 +6,9 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=off \
-    PIP_DISABLE_PIP_VERSION_CHECK=on
+    PIP_DISABLE_PIP_VERSION_CHECK=on \
+    CURRENT_DATE="2025-04-27 09:59:52" \
+    CURRENT_USER="GuardianAngelWw"
 
 # Install system dependencies
 RUN apt-get update && \
@@ -20,8 +22,8 @@ RUN apt-get update && \
 
 # Copy and install requirements
 COPY requirements.txt .
-# Remove --no-cache-dir since we're managing cache with environment variables
-RUN pip install -r requirements.txt
+# Force reinstall to ensure all dependencies are up to date
+RUN pip install --no-cache-dir -r requirements.txt --upgrade
 
 # Setup user and directories
 RUN useradd -m -r botuser && \
@@ -42,5 +44,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Expose port
 EXPOSE 8080
 
-# Run application
-CMD ["python", "ollama_telegram_bot.py"]
+# Run application with error logging
+CMD ["python", "-u", "ollama_telegram_bot.py"]
