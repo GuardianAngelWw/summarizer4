@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+from transformers import AutoModelForQuestionAnswering, AutoTokenizer, pipeline
 import torch
 from flask import Flask, jsonify
 import logging.handlers
@@ -184,7 +185,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration (around line 44)
-MODEL_NAME = "google/flan-t5-large"  # Better performance for Q&A and summarization
+MODEL_NAME = "deepset/roberta-base-squad2"  # Better performance for Q&A and summarization
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
@@ -410,7 +411,7 @@ async def load_llm():
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
         logger.info("Tokenizer loaded successfully")
         
-        model = AutoModelForSeq2SeqLM.from_pretrained(
+        model = AutoModelForQuestionAnswering.from_pretrained(
             MODEL_NAME,
             trust_remote_code=True,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
