@@ -7,7 +7,9 @@ import tempfile
 import json
 from typing import List, Dict, Optional, Tuple, Any, Set
 from functools import wraps
-
+from collections import deque
+from datetime import datetime
+import pytz
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember, Chat
 from telegram.ext import (
     Application, 
@@ -28,14 +30,53 @@ import logging.handlers
 # Load environment variables first
 load_dotenv()
 
+# Add a deque to store the last 10 log messages
+last_logs = deque(maxlen=10)
+
+# Custom log handler to capture logs in memory
+class MemoryLogHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            # Format the log message
+            msg = self.format(record)
+            # Add timestamp in UTC
+            timestamp = datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')
+            formatted_msg = f"{timestamp} - {msg}"
+            # Add to deque
+            last_logs.append(formatted_msg)
+        except Exception:
+            self.handleError(record)
+
 # Configuration
 BOT_TOKEN = os.getenv("BOT_TOKEN") # Bot token should be provided via environment variable
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN environment variable not set. Please set it in .env file or environment.")
     raise ValueError("BOT_TOKEN is required")
 
+# Modify the logging setup (around line 55)
+if not logging.getLogger().handlers:
+    log_format = "%(name)s - %(levelname)s - %(message)s"
+    logging.basicConfig(
+        format=log_format,
+        level=logging.INFO,
+        handlers=[
+            logging.StreamHandler(),
+            logging.handlers.RotatingFileHandler(
+                log_file,
+                maxBytes=10485760,  # 10MB
+                backupCount=5
+            ),
+            MemoryLogHandler()  # Add the memory handler
+        ]
+    )
+
+logger = logging.getLogger(__name__)
+
+# Update the env variables (around line 37)
 ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
 ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",")] if ADMIN_USER_IDS else []
+CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
+CURRENT_USER = "GuardianAngelWw"      # Updated current user
 ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
@@ -51,27 +92,11 @@ app = Flask(__name__)
 log_file = os.path.join('logs', 'bot.log')
 os.makedirs('logs', exist_ok=True)
 
-# Configure the root logger only once
-if not logging.getLogger().handlers:
-    logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        level=logging.INFO,
-        handlers=[
-            logging.StreamHandler(),
-            logging.handlers.RotatingFileHandler(
-                log_file,
-                maxBytes=10485760,  # 10MB
-                backupCount=5
-            )
-        ]
-    )
-
-logger = logging.getLogger(__name__)
-
-# Add startup logging
-logger.info(f"Bot starting at {datetime.datetime.utcnow().isoformat()}")
+# Modify the startup logging to be more secure (around line 72)
+logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 logger.info(f"Running on device: {DEVICE}")
 logger.info(f"Model: {MODEL_NAME}")
+logger.info("Bot initialization successful")  # Instead of logging the token
 
 # Flask routes for health monitoring
 @app.route('/health')
@@ -322,6 +347,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/download - Download the current CSV file\n"
             "/upload - Upload a CSV file\n"
             "/clear - Clear all entries or entries in a specific category\n"
+            "/logs - Show last 10 log entries\n"  # Add this line
         )
         help_text += admin_text
     
@@ -425,6 +451,43 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.delete()
         except Exception as e:
             logger.error(f"Error deleting message: {str(e)}")
+
+# Add the logs command handler
+@admin_only
+async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the last 10 log entries to the chat."""
+    if not last_logs:
+        await update.message.reply_text("No logs available.")
+        return
+
+    # Format logs for display
+    log_text = "📋 Last 10 log entries:\n\n"
+    for log in last_logs:
+        log_text += f"{log}\n"
+
+    # Split message if it's too long
+    if len(log_text) > 4000:  # Telegram message limit is 4096 characters
+        parts = [log_text[i:i+4000] for i in range(0, len(log_text), 4000)]
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(log_text)
+
+# Add custom error handler to exclude sensitive data
+def format_error_for_user(error: Exception) -> str:
+    """Format error message for user, excluding sensitive information."""
+    error_str = str(error)
+    # List of patterns to remove/replace
+    sensitive_patterns = [
+        (r'token=[a-zA-Z0-9:_-]+', 'token=<REDACTED>'),
+        (r'api_key=[a-zA-Z0-9_-]+', 'api_key=<REDACTED>'),
+        (r'password=[a-zA-Z0-9@#$%^&*]+', 'password=<REDACTED>'),
+        (r'BOT_TOKEN=[a-zA-Z0-9:_-]+', 'BOT_TOKEN=<REDACTED>')
+    ]
+    
+    for pattern, replacement in sensitive_patterns:
+        error_str = re.sub(pattern, replacement, error_str)
+    return error_str
 
 @admin_only
 async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -564,21 +627,33 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Send message
     await update.message.reply_text(message, reply_markup=reply_markup)
 
+# Update the handle_pagination function to check for admin permissions (around line 557)
 async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle pagination callbacks and other inline button actions."""
     query = update.callback_query
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     
-    # Verify admin permissions
+    # Always verify admin permissions first
     is_user_admin = await is_admin(context, chat_id, user_id)
     if not is_user_admin:
-        await query.answer("You don't have permission for this action.")
+        await query.answer("Sorry, only admins can use these controls.", show_alert=True)
         return
-    
+        
     await query.answer()
     data = query.data
     
+    # Handle category selection
+    if data.startswith("cat:"):
+        category = data.split(":")[1]
+        context.user_data['page'] = 0  # Reset page when changing category
+        context.user_data['category'] = category
+        
+        # Re-trigger list with the selected category
+        fake_update = Update(update.update_id, message=update.effective_message)
+        await list_entries(fake_update, context)
+        return
+        
     # Handle page navigation
     if data.startswith("page:"):
         parts = data.split(":")
@@ -614,7 +689,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # Create navigation buttons
         keyboard = []
         
-        # Add category filter buttons
+        # Add category filter buttons (only for admins)
         categories = get_categories()
         category_buttons = []
         for cat in categories[:3]:  # Limit to 3 buttons per row
@@ -637,14 +712,14 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         if nav_row:
             keyboard.append(nav_row)
         
-        # Add delete buttons
+        # Add delete buttons (only shown to admins)
         for i in range(start_idx, end_idx):
             keyboard.append([InlineKeyboardButton(
                 f"🗑️ Delete #{i+1}", 
                 callback_data=f"delete:{i}"
             )])
         
-        # Add clear all button if there are entries
+        # Add clear all button if there are entries (only shown to admins)
         if entries:
             clear_text = "Clear All"
             if category:
@@ -658,25 +733,16 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         # Update message
         await query.edit_message_text(message, reply_markup=reply_markup)
-    
-    # Handle category selection
-    elif data.startswith("cat:"):
-        category = data.split(":")[1]
-        context.user_data['page'] = 0  # Reset page when changing category
-        context.user_data['category'] = category
-        
-        # Re-trigger list with the selected category
-        fake_update = Update(update.update_id, message=update.effective_message)
-        await list_entries(fake_update, context)
-    
-    # Handle entry deletion
+        return
+
+    # Rest of the function remains the same...
     elif data.startswith("delete:"):
         index = int(data.split(":")[1])
         if delete_entry(index):
             await query.edit_message_text(f"✅ Entry #{index+1} deleted successfully.")
         else:
             await query.edit_message_text(f"❌ Failed to delete entry #{index+1}.")
-    
+            
     # Handle clear all entries
     elif data.startswith("clear:"):
         category_filter = data.split(":")[1]
@@ -702,31 +768,6 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ]
         
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    # Handle clear confirmation
-    elif data.startswith("confirm_clear:"):
-        category_filter = data.split(":")[1]
-        category = None if category_filter == 'all' else category_filter
-        
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-        
-        # Clear entries
-        count = clear_all_entries(group_id, category)
-        
-        if count > 0:
-            message = f"✅ Cleared {count} entries"
-            if category:
-                message += f" from category '{category}'"
-            await query.edit_message_text(message)
-        else:
-            await query.edit_message_text("❌ No entries were cleared or an error occurred.")
-    
-    # Handle cancel clear
-    elif data == "cancel_clear":
-        await query.edit_message_text("Operation canceled.")
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
@@ -751,6 +792,7 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
         )
     return answer
 
+# Update the error handling in generate_response
 async def generate_response(prompt: str, model, tokenizer) -> str:
     try:
         logger.info("Tokenizing input...")
@@ -765,11 +807,9 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
             top_p=0.9,
             temperature=0.7,
             num_return_sequences=1,
-            # Add safety parameters
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
-            # Add timeout
-            max_time=30.0  # 30 seconds timeout
+            max_time=30.0
         )
         
         logger.info("Decoding response...")
@@ -777,8 +817,9 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
         response = decoded_output[len(prompt):] if decoded_output.startswith(prompt) else decoded_output
         return response.strip()
     except Exception as e:
-        logger.error(f"Error in generate_response: {str(e)}")
-        raise RuntimeError(f"Failed to generate response: {str(e)}")
+        safe_error = format_error_for_user(e)
+        logger.error(f"Error in generate_response: {safe_error}")
+        raise RuntimeError(f"Failed to generate response: {safe_error}")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
@@ -1151,6 +1192,7 @@ def main() -> None:
     application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
     application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
     application.add_handler(CommandHandler("here", here_command))  # Available to all users
+    application.add_handler(CommandHandler("logs", show_logs))  # New logs command
 
     # Enhanced callback query handlers
     application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
