@@ -106,9 +106,7 @@ class BotStatusMonitor:
     async def send_shutdown_notification(self, reason: str = "Planned Shutdown"):
         """Send shutdown notification to admins."""
         message = SHUTDOWN_MESSAGE.format(
-            datetime.now(pytz.UTC).strftime("%Y-%m-
-
-%d %H:%M:%S"),
+            datetime.now(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S"),
             reason
         )
         await self.send_to_admins(message)
