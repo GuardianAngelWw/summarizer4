@@ -63,13 +63,14 @@ jobs:
           path: trivy-results.txt
           retention-days: 5
 
+# ... (previous configuration remains the same until run-bot job)
+
   run-bot:
     needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
     
-    # Set timeout to maximum allowed by GitHub Actions
-    timeout-minutes: 340 # Just under 6 hours to allow for cleanup
+    timeout-minutes: 340
 
     steps:
       - name: Checkout repository
@@ -84,7 +85,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt psutil pytz  # Added psutil for memory monitoring
 
       - name: Create logs directory
         run: mkdir -p logs
@@ -94,20 +95,24 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
           PYTHONUNBUFFERED: 1
+          GITHUB_WORKFLOW_RUN: ${{ github.run_id }}
+          GITHUB_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          # Function to check if port 8080 is in use
-          check_port() {
-            nc -z localhost 8080 2>/dev/null
-            return $?
+          # Function to send notification using curl
+          send_notification() {
+            local status="$1"
+            local message="$2"
+            curl -s -X POST \
+              "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${ADMIN_USER_IDS%%,*}" \
+              -d "text=🤖 Workflow Update 🤖%0A%0AStatus: ${status}%0A${message}%0A%0AWorkflow: ${GITHUB_WORKFLOW_URL}" \
+              -d "parse_mode=HTML"
           }
 
-          # Function to check bot health
-          check_health() {
-            curl -sf http://localhost:8080/health >/dev/null 2>&1
-            return $?
-          }
+          # Send startup notification
+          send_notification "Starting ▶️" "Bot is being initialized..."
 
-          # Start bot with monitoring
+          # Monitor and run bot
           {
             python ollama_telegram_bot.py &
             BOT_PID=$!
@@ -118,14 +123,14 @@ jobs:
             # Monitor bot process
             while true; do
               if ! ps -p $BOT_PID > /dev/null; then
-                echo "Bot process died, restarting..."
+                send_notification "Warning ⚠️" "Bot process died, restarting..."
                 python ollama_telegram_bot.py &
                 BOT_PID=$!
                 sleep 10
               fi
               
-              if ! check_port || ! check_health; then
-                echo "Health check failed, restarting bot..."
+              if ! curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+                send_notification "Warning ⚠️" "Health check failed, restarting bot..."
                 kill $BOT_PID 2>/dev/null || true
                 python ollama_telegram_bot.py &
                 BOT_PID=$!
@@ -136,6 +141,18 @@ jobs:
             done
           } 2>&1 | tee -a logs/bot.log
 
+      - name: Send shutdown notification
+        if: always()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_USER_IDS: ${{ secrets.ADMIN_USER_IDS }}
+        run: |
+          curl -s -X POST \
+            "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${ADMIN_USER_IDS%%,*}" \
+            -d "text=🤖 Workflow Update 🤖%0A%0AStatus: Stopped ⏹️%0ATime: $(date -u +'%Y-%m-%d %H:%M:%S')%0A%0AWorkflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -d "parse_mode=HTML"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -143,15 +160,3 @@ jobs:
           name: bot-logs
           path: logs/
           retention-days: 5
-
-  cleanup-old-workflows:
-    needs: [build, run-bot]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Delete old workflow runs
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          retain_days: 1
-          keep_minimum_runs: 3
