@@ -40,8 +40,8 @@ ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
-# LLM Configuration
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"  # Changed to a summarization model
+# Change the model to a smaller one
+MODEL_NAME = "google/flan-t5-small"  # Much smaller model, around 80M parameters
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
