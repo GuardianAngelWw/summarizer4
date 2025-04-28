@@ -21,16 +21,18 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode, ChatType
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-import torch
+import aiohttp  # NEW: For async HTTP requests to Groq API
 from flask import Flask, jsonify
 import logging.handlers
 import waitress
 import threading
 
-# No need for duplicate imports as they're already defined above
+# ------------------ NEW: GROQ API CONSTANTS ------------------
+GROQ_API_KEY = "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"
+GROQ_API_URL = "https://api.groq.com/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"  # Or your preferred model
 
-# Add these constants at the top of your file
+# ------------------ BOT STATUS & LOGGING ------------------
 STARTUP_MESSAGE = """
 🤖 Bot Status Update 🤖
 Status: Online ✅
@@ -155,7 +157,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAEBBLaOBpuRNgCqsSErwYzvkKxuWRZX32E" # Bot token should be provided via environment variable
+BOT_TOKEN = "6614402193:AAHGTmV-ZXSKbhd9_UGvux2AVrVbXyiUbeE" # Bot token should be provided via environment variable
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -183,17 +185,13 @@ ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
-# Update the model configuration (around line 44)
-MODEL_NAME = "google/flan-t5-large"  # Better performance for Q&A and summarization
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
 # Flask app initialization
 app = Flask(__name__)
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-logger.info(f"Running on device: {DEVICE}")
-logger.info(f"Model: {MODEL_NAME}")
+logger.info(f"Running on device: cloud (Groq API)")
+logger.info(f"Model: {GROQ_MODEL} (via Groq API)")
 logger.info("Bot initialization successful")  # Instead of logging the token
 
 # Flask routes for health monitoring
@@ -202,7 +200,7 @@ def health_check():
     """Health check endpoint for container monitoring"""
     return jsonify({
         'status': 'healthy',
-        'timestamp': datetime.datetime.utcnow().isoformat(),
+        'timestamp': datetime.utcnow().isoformat(),
         'version': '1.0.0'
     }), 200
 
@@ -214,9 +212,6 @@ def root():
         'status': 'running',
         'documentation': '/health for health check endpoint'
     }), 200
-
-# Log the model loading
-logger.info(f"Bot started with model: {MODEL_NAME} on device: {DEVICE}")
 
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
@@ -403,28 +398,35 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
-# Modify the load_llm function around line 284
-async def load_llm():
-    try:
-        logger.info(f"Loading model {MODEL_NAME}...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-        logger.info("Tokenizer loaded successfully")
-        
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            MODEL_NAME,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto",
-            # Add low_cpu_mem_usage=True for better memory management
-            low_cpu_mem_usage=True
-        )
-        logger.info(f"Model loaded successfully on device: {model.device}")
-        return {"model": model, "tokenizer": tokenizer}
-    except Exception as e:
-        logger.error(f"Error loading model: {str(e)}")
-        raise
+# ---------------------- NEW: GROQ API RESPONSE ----------------------
 
-# Command Handlers
+async def async_generate_response(prompt: str) -> str:
+    """Generate a response using the Groq API."""
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 512,
+        "temperature": 0.7
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(GROQ_API_URL, headers=headers, json=data, timeout=60) as resp:
+            if resp.status == 200:
+                res = await resp.json()
+                return res["choices"][0]["message"]["content"].strip()
+            else:
+                error_text = await resp.text()
+                logger.error(f"Groq API error {resp.status}: {error_text}")
+                raise Exception(f"Groq API error {resp.status}: {error_text}")
+
+# ---------------------- COMMAND HANDLERS -------------------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
@@ -434,8 +436,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         f"👋 Hi {user.mention_html()}! I'm Summarizer2, an AI-powered bot for managing knowledge entries.\n\n"
         "Available commands:\n"
-        "/ask &lt;your question &gt; - Ask a question about the stored entries\n"
-        "/here &lt;your question &gt; - Answer a question (when replying to someone)\n"
+        "/ask <your question > - Ask a question about the stored entries\n"
+        "/here <your question > - Answer a question (when replying to someone)\n"
     )
     
     if is_user_admin:
@@ -451,40 +453,58 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     help_text += "\nUse categories to organize your knowledge entries."
     await update.message.reply_html(help_text)
-    
+
+def build_prompt(question: str, context_text: str) -> str:
+    """Build a prompt for the LLM."""
+    prompt = (
+        "You are an expert assistant. Use the following context to answer the question. "
+        "Cite relevant entries and be concise.\n\n"
+        f"Context:\n{context_text}\n\n"
+        f"Question: {question}\n\n"
+        "Answer:"
+    )
+    return prompt
+
+def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
+    """Add hyperlinks to keywords in the answer if their text matches an entry."""
+    for key, link in keywords.items():
+        if key in answer:
+            answer = answer.replace(key, f'<a href="{link}">{key}</a>')
+    return answer
+
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Answer a question using the LLM but reply to the person being replied to and delete the command."""
+    """Answer a question using the Groq API but reply to the person being replied to and delete the command."""
     # Check if this message is a reply
     if update.message.reply_to_message is None:
         await update.message.reply_text("This command must be used as a reply to another message.")
         return
-    
+
     # Get the question from the command text
     command_text = update.message.text
     question = command_text[5:].strip()  # Remove "/here "
-    
+
     if not question:
         await update.message.reply_text(
             "Please provide a question after the /here command. For example:\n"
             "/here What are the main features of Summarizer2?"
         )
         return
-    
+
     # Get the message this is replying to
     replied_msg = update.message.reply_to_message
     replied_user = replied_msg.from_user
-    
+
     # Send initial thinking message
     thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
-    
+
     # Determine group ID for group-specific entries if in a group chat
     group_id = None
     if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
         group_id = update.effective_chat.id
-    
+
     # Get entries for context - specific to this group if in a group chat
     entries = read_entries(group_id=group_id)
-    
+
     if not entries:
         await thinking_message.delete()
         await replied_msg.reply_text(
@@ -493,48 +513,38 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await update.message.delete()
         return
-    
+
     try:
-        # Load LLM components
         await thinking_message.edit_text("🤔")
-        
-        llm_components = await load_llm()
-        model = llm_components["model"]
-        tokenizer = llm_components["tokenizer"]
-        
-        await thinking_message.edit_text("⚡")
-        
         # Create context from entries with categories
         context_entries = []
         for entry in entries:
             category = entry.get("category", "General")
             entry_text = f"Category: {category}\nEntry: {entry['text']}\nSource: {entry['link']}"
             context_entries.append(entry_text)
-        
         context_text = "\n\n".join(context_entries)
-        
         prompt = build_prompt(question, context_text)
-        
-        # Generate response
-        answer = await generate_response(prompt, model, tokenizer)
-        
+
+        await thinking_message.edit_text("⚡")
+        answer = await async_generate_response(prompt)
+
         # Add hyperlinks to the answer
         keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
-        
+
         # Send response to the replied user
         await thinking_message.delete()
         await replied_msg.reply_text(
             f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{final_answer}",
             parse_mode=ParseMode.HTML
         )
-        
+
         # Delete the original command message
         try:
             await update.message.delete()
         except Exception as e:
             logger.error(f"Error deleting message: {str(e)}")
-    
+
     except Exception as e:
         logger.error(f"Error generating LLM response: {str(e)}")
         await thinking_message.delete()
@@ -543,22 +553,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Error: {str(e)[:100]}...",
             parse_mode=ParseMode.HTML
         )
-        
         # Still try to delete the command message
         try:
             await update.message.delete()
-        except Exception as e:
-            logger.error(f"Error deleting message: {str(e)}")
-
-# Add the logs command handler
-@admin_only
-async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send the last 10 log entries to the chat."""
-    if not last_logs:
-        await update.message.reply_text("No logs available.")
-        return
-
-    # Format logs for display
-    log_text = "📋 Last 10 log entries:\n\n"
-    for log in last_logs:
-                 
+        e
