@@ -184,7 +184,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration (around line 44)
-MODEL_NAME = "google/flan-t5-base"   # Better compatibility and faster loading
+MODEL_NAME = "microsoft/phi-2"   # Better compatibility and faster loading
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
