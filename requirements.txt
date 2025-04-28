@@ -14,5 +14,3 @@ requests>=2.28.0
 watchdog>=2.1.9
 groq
 nest_asyncio
-python-telegram-bot[job-queue]
-pandas
