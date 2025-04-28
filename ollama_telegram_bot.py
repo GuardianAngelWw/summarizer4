@@ -10,6 +10,7 @@ from typing import List, Dict, Optional, Tuple, Any, Set
 from functools import wraps
 from collections import deque
 from datetime import datetime
+from datetime import time  # Import time explicitly
 import pytz
 from dotenv import load_dotenv
 import nest_asyncio
@@ -1394,9 +1395,9 @@ async def main():
          # Schedule daily CSV sending
         application.job_queue.run_daily(
             send_csv_to_log_channel,
-            time=datetime.time(hour=0, minute=0, second=0, tzinfo=pytz.UTC),  # Schedule at midnight UTC
+            time=time(hour=0, minute=0, second=0, tzinfo=pytz.UTC),  # Schedule at midnight UTC
             name="daily_csv_sender"
-        )       
+        )
         # Run the bot (only run once)
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
