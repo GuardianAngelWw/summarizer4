@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
 from flask import Flask, jsonify
 import logging.handlers
@@ -409,10 +410,11 @@ async def load_llm():
         logger.info(f"Loading model {MODEL_NAME}...")
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
         logger.info("Tokenizer loaded successfully")
-        
-        model = AutoModelForSeq2SeqLM.from_pretrained(
+
+        from transformers import AutoModelForCausalLM  # <--- change here
+        model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
-            torch_dtype=torch.float32,  # Use float32 for better compatibility
+            torch_dtype=torch.float32,
             device_map="auto",
             low_cpu_mem_usage=True
         )
