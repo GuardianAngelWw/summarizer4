@@ -1,5 +1,6 @@
 import os
 import csv
+import sys
 import asyncio
 import logging
 import re
@@ -11,6 +12,9 @@ from collections import deque
 from datetime import datetime
 import pytz
 from dotenv import load_dotenv
+import nest_asyncio
+# Apply nest_asyncio to patch the event loop
+nest_asyncio.apply()
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember, Chat
 from telegram.ext import (
     Application, 
@@ -21,18 +25,15 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode, ChatType
-import aiohttp  # NEW: For async HTTP requests to Groq API
+import requests
+import json
 from flask import Flask, jsonify
 import logging.handlers
-import waitress
-import threading
+# Groq API client will be imported as needed
 
-# ------------------ NEW: GROQ API CONSTANTS ------------------
-GROQ_API_KEY = "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"
-GROQ_API_URL = "https://api.groq.com/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"  # Or your preferred model
+# No need for duplicate imports as they're already defined above
 
-# ------------------ BOT STATUS & LOGGING ------------------
+# Add these constants at the top of your file
 STARTUP_MESSAGE = """
 🤖 Bot Status Update 🤖
 Status: Online ✅
@@ -66,17 +67,16 @@ class BotStatusMonitor:
         self.version = "2025.04.27"  # Update this with your version
 
     async def send_to_admins(self, message: str):
-        """Send a message to all admin users."""
+        """Send a message to logs channel."""
         app = Application.builder().token(self.bot_token).build()
-        for admin_id in self.admin_ids:
-            try:
-                await app.bot.send_message(
-                    chat_id=admin_id,
-                    text=message,
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logging.error(f"Failed to send status to admin {admin_id}: {e}")
+        try:
+            await app.bot.send_message(
+                chat_id=-1001925908750,  # Logs channel ID
+                text=message,
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            logging.error(f"Failed to send status to logs channel: {e}")
         await app.shutdown()
 
     def get_memory_usage(self):
@@ -157,7 +157,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAHGTmV-ZXSKbhd9_UGvux2AVrVbXyiUbeE" # Bot token should be provided via environment variable
+BOT_TOKEN = "6614402193:AAHCMnjwDIIjpCO-P4TpxeeXSx-ltz8x5Ks"
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -185,13 +185,16 @@ ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
+# Update the model configuration for Groq API
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")  # Use the correct model name format
+
 # Flask app initialization
 app = Flask(__name__)
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-logger.info(f"Running on device: cloud (Groq API)")
-logger.info(f"Model: {GROQ_MODEL} (via Groq API)")
+logger.info(f"Using Groq API with model: {GROQ_MODEL}")
 logger.info("Bot initialization successful")  # Instead of logging the token
 
 # Flask routes for health monitoring
@@ -200,7 +203,7 @@ def health_check():
     """Health check endpoint for container monitoring"""
     return jsonify({
         'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': datetime.datetime.utcnow().isoformat(),
         'version': '1.0.0'
     }), 200
 
@@ -212,6 +215,9 @@ def root():
         'status': 'running',
         'documentation': '/health for health check endpoint'
     }), 200
+
+# Log the model loading
+logger.info(f"Bot started with Groq API model: {GROQ_MODEL}")
 
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
@@ -398,35 +404,22 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
-# ---------------------- NEW: GROQ API RESPONSE ----------------------
+# Updated load_llm function to use Groq API
+async def load_llm():
+    try:
+        logger.info(f"Using Groq API with model: {GROQ_MODEL}")
+        
+        if not GROQ_API_KEY:
+            logger.error("GROQ_API_KEY is not set. Please set it in .env file or environment variables.")
+            raise ValueError("GROQ_API_KEY is required")
+        
+        # Initialize client and return it directly (no need to keep tokenizer and model separately)
+        return {"groq_client": True}
+    except Exception as e:
+        logger.error(f"Error initializing Groq client: {str(e)}")
+        raise
 
-async def async_generate_response(prompt: str) -> str:
-    """Generate a response using the Groq API."""
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": prompt}
-        ],
-        "max_tokens": 512,
-        "temperature": 0.7
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(GROQ_API_URL, headers=headers, json=data, timeout=60) as resp:
-            if resp.status == 200:
-                res = await resp.json()
-                return res["choices"][0]["message"]["content"].strip()
-            else:
-                error_text = await resp.text()
-                logger.error(f"Groq API error {resp.status}: {error_text}")
-                raise Exception(f"Groq API error {resp.status}: {error_text}")
-
-# ---------------------- COMMAND HANDLERS -------------------------
-
+# Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
@@ -436,8 +429,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = (
         f"👋 Hi {user.mention_html()}! I'm Summarizer2, an AI-powered bot for managing knowledge entries.\n\n"
         "Available commands:\n"
-        "/ask <your question > - Ask a question about the stored entries\n"
-        "/here <your question > - Answer a question (when replying to someone)\n"
+        "/ask &lt;your question &gt; - Ask a question about the stored entries\n"
+        "/here &lt;your question &gt; - Answer a question (when replying to someone)\n"
     )
     
     if is_user_admin:
@@ -453,58 +446,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
     help_text += "\nUse categories to organize your knowledge entries."
     await update.message.reply_html(help_text)
-
-def build_prompt(question: str, context_text: str) -> str:
-    """Build a prompt for the LLM."""
-    prompt = (
-        "You are an expert assistant. Use the following context to answer the question. "
-        "Cite relevant entries and be concise.\n\n"
-        f"Context:\n{context_text}\n\n"
-        f"Question: {question}\n\n"
-        "Answer:"
-    )
-    return prompt
-
-def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
-    """Add hyperlinks to keywords in the answer if their text matches an entry."""
-    for key, link in keywords.items():
-        if key in answer:
-            answer = answer.replace(key, f'<a href="{link}">{key}</a>')
-    return answer
-
+    
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Answer a question using the Groq API but reply to the person being replied to and delete the command."""
+    """Answer a question using the LLM but reply to the person being replied to and delete the command."""
     # Check if this message is a reply
     if update.message.reply_to_message is None:
         await update.message.reply_text("This command must be used as a reply to another message.")
         return
-
+    
     # Get the question from the command text
     command_text = update.message.text
     question = command_text[5:].strip()  # Remove "/here "
-
+    
     if not question:
         await update.message.reply_text(
             "Please provide a question after the /here command. For example:\n"
             "/here What are the main features of Summarizer2?"
         )
         return
-
+    
     # Get the message this is replying to
     replied_msg = update.message.reply_to_message
     replied_user = replied_msg.from_user
-
+    
     # Send initial thinking message
     thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
-
+    
     # Determine group ID for group-specific entries if in a group chat
     group_id = None
     if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
         group_id = update.effective_chat.id
-
+    
     # Get entries for context - specific to this group if in a group chat
     entries = read_entries(group_id=group_id)
-
+    
     if not entries:
         await thinking_message.delete()
         await replied_msg.reply_text(
@@ -513,38 +488,47 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await update.message.delete()
         return
-
+    
     try:
+        # Load LLM components
         await thinking_message.edit_text("🤔")
+        
+        # Just validate API key
+        await load_llm()
+        
+        await thinking_message.edit_text("⚡")
+        
         # Create context from entries with categories
         context_entries = []
         for entry in entries:
             category = entry.get("category", "General")
             entry_text = f"Category: {category}\nEntry: {entry['text']}\nSource: {entry['link']}"
             context_entries.append(entry_text)
+        
         context_text = "\n\n".join(context_entries)
+        
         prompt = build_prompt(question, context_text)
-
-        await thinking_message.edit_text("⚡")
-        answer = await async_generate_response(prompt)
-
+        
+        # Generate response
+        answer = await generate_response(prompt, None, None)
+        
         # Add hyperlinks to the answer
         keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
-
+        
         # Send response to the replied user
         await thinking_message.delete()
         await replied_msg.reply_text(
             f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{final_answer}",
             parse_mode=ParseMode.HTML
         )
-
+        
         # Delete the original command message
         try:
             await update.message.delete()
         except Exception as e:
             logger.error(f"Error deleting message: {str(e)}")
-
+    
     except Exception as e:
         logger.error(f"Error generating LLM response: {str(e)}")
         await thinking_message.delete()
@@ -553,7 +537,851 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Error: {str(e)[:100]}...",
             parse_mode=ParseMode.HTML
         )
+        
         # Still try to delete the command message
         try:
             await update.message.delete()
-        e
+        except Exception as e:
+            logger.error(f"Error deleting message: {str(e)}")
+
+# Add the logs command handler
+@admin_only
+async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the last 10 log entries to the chat."""
+    if not last_logs:
+        await update.message.reply_text("No logs available.")
+        return
+
+    # Format logs for display
+    log_text = "📋 Last 10 log entries:\n\n"
+    for log in last_logs:
+        log_text += f"{log}\n"
+
+    # Split message if it's too long
+    if len(log_text) > 4000:  # Telegram message limit is 4096 characters
+        parts = [log_text[i:i+4000] for i in range(0, len(log_text), 4000)]
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(log_text)
+
+# Add custom error handler to exclude sensitive data
+def format_error_for_user(error: Exception) -> str:
+    """Format error message for user, excluding sensitive information."""
+    error_str = str(error)
+    # List of patterns to remove/replace
+    sensitive_patterns = [
+        (r'token=[a-zA-Z0-9:_-]+', 'token=<REDACTED>'),
+        (r'api_key=[a-zA-Z0-9_-]+', 'api_key=<REDACTED>'),
+        (r'password=[a-zA-Z0-9@#$%^&*]+', 'password=<REDACTED>'),
+        (r'BOT_TOKEN=[a-zA-Z0-9:_-]+', 'BOT_TOKEN=<REDACTED>')
+    ]
+    
+    for pattern, replacement in sensitive_patterns:
+        error_str = re.sub(pattern, replacement, error_str)
+    return error_str
+
+@admin_only
+async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add a new entry with optional category and group specificity."""
+    # Check command format
+    text = update.message.text[5:].strip()  # Remove "/add "
+    
+    # Extract text, link, and optional category using regex to handle quoted arguments
+    # Handle quoted arguments pattern with proper escaping for nested quotes
+    match = re.match(r'"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
+    
+    if not match:
+        await update.message.reply_text(
+            "Please use the format: /add \"entry text\" \"message_link\" \"optional_category\""
+        )
+        return
+    
+    # Extract the matched groups
+    match_groups = match.groups()
+    entry_text = match_groups[0]
+    link = match_groups[1]
+    category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
+    
+    # Get group ID if in a group
+    group_id = None
+    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        group_id = update.effective_chat.id
+    
+    # Add the entry
+    if add_entry(entry_text, link, category, group_id):
+        await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
+    else:
+        await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
+
+@admin_only
+async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all entries with pagination, category filtering, and group specificity."""
+    args = context.args if context.args else []
+    
+    # Parse arguments - format: ["query", "category=value"]
+    query = ""
+    category = None
+    
+    for arg in args:
+        if arg.startswith("category="):
+            category = arg.split("=")[1] if len(arg.split("=")) > 1 else None
+        else:
+            query = arg
+    
+    page = int(context.user_data.get('page', 0))
+    
+    # Determine group ID for group-specific entries
+    group_id = None
+    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        group_id = update.effective_chat.id
+    
+    # Get entries, filtered by search query, category, and group if provided
+    entries = search_entries(query, group_id, category) if query else read_entries(group_id, category)
+    
+    # Calculate pagination
+    total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
+    start_idx = page * ENTRIES_PER_PAGE
+    end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
+    
+    # Generate message text
+    if not entries:
+        message = "No entries found."
+        if category:
+            message += f" in category '{category}'"
+        if query:
+            message += f" matching '{query}'"
+        await update.message.reply_text(message)
+        return
+    
+    # Build header message
+    message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
+    if category:
+        message += f" in category '{category}'"
+    if query:
+        message += f" matching '{query}'"
+    message += ":\n\n"
+    
+    # Add entries to message
+    for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
+        message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
+        message += f"   🔗 {entry['link']}\n\n"
+    
+    # Create navigation buttons
+    keyboard = []
+    
+    # Add category filter buttons
+    categories = get_categories()
+    category_buttons = []
+    for cat in categories[:3]:  # Limit to 3 buttons per row
+        category_buttons.append(InlineKeyboardButton(
+            f"📂 {cat}", 
+            callback_data=f"cat:{cat}"
+        ))
+    
+    if category_buttons:
+        keyboard.append(category_buttons)
+    
+    # Add navigation buttons
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
+    
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
+    
+    if nav_row:
+        keyboard.append(nav_row)
+    
+    # Add delete buttons
+    for i in range(start_idx, end_idx):
+        keyboard.append([InlineKeyboardButton(
+            f"🗑️ Delete #{i+1}", 
+            callback_data=f"delete:{i}"
+        )])
+    
+    # Add clear all button if there are entries
+    if entries:
+        clear_text = "Clear All"
+        if category:
+            clear_text = f"Clear '{category}' Entries"
+        keyboard.append([InlineKeyboardButton(
+            f"🗑️ {clear_text}", 
+            callback_data=f"clear:{category or 'all'}"
+        )])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    # Store the current page and category in user data
+    context.user_data['page'] = page
+    context.user_data['category'] = category
+    
+    # Send message
+    await update.message.reply_text(message, reply_markup=reply_markup)
+
+# Update the handle_pagination function to check for admin permissions (around line 557)
+async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pagination callbacks and other inline button actions."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Always verify admin permissions first
+    is_user_admin = await is_admin(context, chat_id, user_id)
+    if not is_user_admin:
+        await query.answer("Sorry, only admins can use these controls.", show_alert=True)
+        return
+        
+    await query.answer()
+    data = query.data
+    
+    # Handle category selection
+    if data.startswith("cat:"):
+        category = data.split(":")[1]
+        context.user_data['page'] = 0  # Reset page when changing category
+        context.user_data['category'] = category
+        
+        # Re-trigger list with the selected category
+        fake_update = Update(update.update_id, message=update.effective_message)
+        await list_entries(fake_update, context)
+        return
+        
+    # Handle page navigation
+    if data.startswith("page:"):
+        parts = data.split(":")
+        page = int(parts[1])
+        category = parts[2] if len(parts) > 2 and parts[2] else None
+        
+        context.user_data['page'] = page
+        
+        # Determine group ID for group-specific entries
+        group_id = None
+        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            group_id = update.effective_chat.id
+        
+        # Get entries with filtering
+        entries = read_entries(group_id, category)
+        
+        # Calculate pagination
+        total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
+        start_idx = page * ENTRIES_PER_PAGE
+        end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
+        
+        # Build header message
+        message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
+        if category:
+            message += f" in category '{category}'"
+        message += ":\n\n"
+        
+        # Add entries to message
+        for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
+            message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
+            message += f"   🔗 {entry['link']}\n\n"
+        
+        # Create navigation buttons
+        keyboard = []
+        
+        # Add category filter buttons (only for admins)
+        categories = get_categories()
+        category_buttons = []
+        for cat in categories[:3]:  # Limit to 3 buttons per row
+            category_buttons.append(InlineKeyboardButton(
+                f"📂 {cat}", 
+                callback_data=f"cat:{cat}"
+            ))
+        
+        if category_buttons:
+            keyboard.append(category_buttons)
+        
+        # Add navigation buttons
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
+        
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
+        
+        if nav_row:
+            keyboard.append(nav_row)
+        
+        # Add delete buttons (only shown to admins)
+        for i in range(start_idx, end_idx):
+            keyboard.append([InlineKeyboardButton(
+                f"🗑️ Delete #{i+1}", 
+                callback_data=f"delete:{i}"
+            )])
+        
+        # Add clear all button if there are entries (only shown to admins)
+        if entries:
+            clear_text = "Clear All"
+            if category:
+                clear_text = f"Clear '{category}' Entries"
+            keyboard.append([InlineKeyboardButton(
+                f"🗑️ {clear_text}", 
+                callback_data=f"clear:{category or 'all'}"
+            )])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
+        # Update message
+        await query.edit_message_text(message, reply_markup=reply_markup)
+        return
+
+    # Rest of the function remains the same...
+    elif data.startswith("delete:"):
+        index = int(data.split(":")[1])
+        if delete_entry(index):
+            await query.edit_message_text(f"✅ Entry #{index+1} deleted successfully.")
+        else:
+            await query.edit_message_text(f"❌ Failed to delete entry #{index+1}.")
+            
+    # Handle clear all entries
+    elif data.startswith("clear:"):
+        category_filter = data.split(":")[1]
+        category = None if category_filter == 'all' else category_filter
+        
+        # Determine group ID for group-specific entries
+        group_id = None
+        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            group_id = update.effective_chat.id
+        
+        # Confirm before clearing
+        confirm_text = "Are you sure you want to clear "
+        if category:
+            confirm_text += f"all entries in category '{category}'?"
+        else:
+            confirm_text += "ALL entries?"
+            
+        keyboard = [
+            [
+                InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
+                InlineKeyboardButton("Cancel", callback_data="cancel_clear")
+            ]
+        ]
+        
+        await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+# Helper functions for ask_question
+def build_prompt(question: str, context_text: str) -> str:
+    return f"""You are an AI assistant. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:\n\n
+    Question: {question}\n\n
+    Knowledge Base:\n{context_text}"""
+
+def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
+    """
+    Replace keywords with Telegram markdown links in the answer.
+
+    :param answer: The generated answer text.
+    :param keywords: A dictionary of keywords and their corresponding URLs.
+    :return: Updated answer with hyperlinks.
+    """
+    for word, url in keywords.items():
+        # Replace only the full word or part of word with the hyperlink
+        answer = re.sub(
+            rf"(?<!\w)({re.escape(word)})(?!\w)",  # Match word boundaries to replace only intended parts
+            f"[\\1]({url})",  # Telegram markdown format
+            answer
+        )
+    return answer
+
+async def generate_response(prompt: str, _, __=None) -> str:
+    try:
+        logger.info("Sending request to Groq API...")
+        
+        # Import here to ensure dependencies are available
+        from groq import AsyncGroq
+        
+        # Initialize the Groq client
+        client = AsyncGroq(api_key=GROQ_API_KEY)
+        
+        # Make sure we're using a valid model name
+        # Some common Groq models: llama3-70b-8192, llama3-8b-8192, mixtral-8x7b-32768
+        # The model should be without hyphens in "versatile" if that was the issue
+        valid_model = GROQ_MODEL
+        if valid_model == "llama-3.3-70b-versatile":
+            valid_model = "llama3-70b-8192"
+        
+        # Send request to Groq API
+        logger.info(f"Using model: {valid_model}")
+        chat_completion = await client.chat.completions.create(
+            model=valid_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=200,  # Increased for more detailed responses
+            top_p=0.95,      # Slightly increased for better creativity
+        )
+        
+        # Extract the response
+        response = chat_completion.choices[0].message.content
+        
+        logger.info("Received response from Groq API")
+        return response.strip()
+    except Exception as e:
+        logger.error(f"Error in generate_response: {str(e)}")
+        raise RuntimeError(f"Failed to generate response: {str(e)}")
+
+async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    question = " ".join(context.args)
+    if not question:
+        await update.message.reply_text(
+            "Please provide a question after the /ask command. For example:\n"
+            "/ask What are the main features of Summarizer2?"
+        )
+        return
+
+    # Send initial thinking message
+    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
+
+    # Load knowledge base
+    group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
+    entries = read_entries(group_id=group_id)
+    if not entries:
+        await thinking_message.delete()
+        await update.message.reply_text("No knowledge entries found to answer your question.")
+        return
+
+    # Build context and prompt
+    context_entries = "\n\n".join(
+        f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
+    )
+    prompt = f"""You are an AI assistant. Answer the question concisely based on the provided knowledge base. Include hyperlinks where appropriate.
+
+    Question: {question}
+
+    Knowledge Base:
+    {context_entries}"""
+
+    # Generate response
+    try:
+        await load_llm()  # Just validate API key
+        answer = await generate_response(prompt, None, None)
+
+        # Add hyperlinks
+        keywords = {entry["text"]: entry["link"] for entry in entries}
+        final_answer = add_hyperlinks(answer, keywords)
+
+        # Format the final answer in Markdown
+        output = f"**Question:** {question}\n\n{final_answer}"
+
+        # Send final response
+        await thinking_message.delete()
+        await update.message.reply_markdown(output)
+    except Exception as e:
+        logger.error(f"Error generating response: {str(e)}")
+        await thinking_message.delete()
+        await update.message.reply_text("An error occurred while processing your question.")
+
+@admin_only
+async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Command to clear all entries or by category."""
+    # Parse arguments
+    category = None
+    if context.args:
+        category = " ".join(context.args)
+    
+    # Determine group ID for group-specific entries
+    group_id = None
+    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        group_id = update.effective_chat.id
+    
+    # Confirm before clearing
+    confirm_text = "Are you sure you want to clear "
+    if category:
+        confirm_text += f"all entries in category '{category}'?"
+    else:
+        confirm_text += "ALL entries?"
+        
+    keyboard = [
+        [
+            InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
+            InlineKeyboardButton("Cancel", callback_data="cancel_clear")
+        ]
+    ]
+    
+    await update.message.reply_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+@admin_only
+async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Download the entries CSV file."""
+    if not os.path.exists(ENTRIES_FILE):
+        await update.message.reply_text("No entries file exists yet.")
+        return
+    
+    # Get entries for the current group if in a group chat
+    group_id = None
+    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+        group_id = update.effective_chat.id
+        entries = read_entries(group_id)
+        
+        # Create a temporary file with only the group's entries
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            try:
+                with open(temp_file.name, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+                    writer.writeheader()
+                    writer.writerows(entries)
+                
+                # Send the filtered CSV
+                await update.message.reply_document(
+                    document=open(temp_file.name, "rb"),
+                    filename=f"entries_{update.effective_chat.title or 'group'}.csv",
+                    caption=f"Here's your knowledge base CSV file for this group. ({len(entries)} entries)"
+                )
+            finally:
+                # Clean up temp file
+                os.unlink(temp_file.name)
+    else:
+        # For private chats, send the full CSV
+        await update.message.reply_document(
+            document=open(ENTRIES_FILE, "rb"),
+            filename="entries.csv",
+            caption=f"Here's your complete knowledge base CSV file."
+        )
+
+@admin_only
+async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Request the user to upload a CSV file."""
+    categories = get_categories()
+    category_list = ", ".join(categories)
+    
+    await update.message.reply_text(
+        "Please upload your CSV file as a reply to this message.\n\n"
+        f"The file should have these columns: 'text', 'link', 'category', 'group_id'\n\n"
+        f"Available categories: {category_list}\n\n"
+        "If you're adding entries for this group, leave group_id empty."
+    )
+    # Set the expected state
+    context.user_data["awaiting_csv"] = True
+
+@admin_only
+async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the uploaded CSV file."""
+    # Always try to process CSV files when they're uploaded in reply
+    if update.message.reply_to_message and update.message.document:
+        # Set the state to true to ensure processing continues
+        context.user_data["awaiting_csv"] = True
+    
+    if not context.user_data.get("awaiting_csv"):
+        return
+    
+    # Reset state
+    context.user_data["awaiting_csv"] = False
+    
+    if not update.message.document:
+        await update.message.reply_text("Please upload a CSV file.")
+        return
+    
+    document = update.message.document
+    file_name = document.file_name.lower() if document.file_name else "unnamed.file"
+    
+    # More permissive file checking - accept any file and try to process as CSV
+    uploaded_entries = []
+    processing_status = await update.message.reply_text("⏳ Processing your uploaded file...")
+    
+    try:
+        # Download the file
+        file = await context.bot.get_file(document.file_id)
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            await file.download_to_drive(temp_file.name)
+            file_path = temp_file.name
+        
+        # Try multiple parsing approaches
+        file_content = ""
+        rows_parsed = []
+        
+        # First read the raw content to examine
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                file_content = f.read()
+        except UnicodeDecodeError:
+            # Try different encodings if UTF-8 fails
+            try:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    file_content = f.read()
+            except Exception as e:
+                await processing_status.edit_text(f"Error reading file: {str(e)}")
+                return
+                
+        # Check if content looks like a CSV
+        if not any(separator in file_content for separator in [",", "\t", ";"]):
+            await processing_status.edit_text(
+                "The uploaded file doesn't appear to be in CSV format. Expected comma, tab, or semicolon delimiters."
+            )
+            return
+            
+        # Try different delimiters
+        for delimiter in [",", "\t", ";"]:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f, delimiter=delimiter)
+                    if not reader.fieldnames:
+                        continue
+                        
+                    # Check for required headers
+                    required_headers = ["text", "link"]
+                    if all(header in reader.fieldnames for header in required_headers):
+                        # Found a working delimiter with required headers
+                        rows_parsed = list(reader)  # Convert to list to preserve after file close
+                        await processing_status.edit_text(f"✅ Found CSV format with {delimiter} delimiter")
+                        break
+            except Exception as e:
+                logger.info(f"Parsing with delimiter {delimiter} failed: {str(e)}")
+                continue
+                
+        # If we didn't parse any rows with standard headers, try alternative approaches
+        if not rows_parsed:
+            await processing_status.edit_text(
+                "Could not find required 'text' and 'link' columns in the CSV. "
+                "Please check the file format and try again."
+            )
+            return
+            
+        # Get current group ID if in a group
+        current_group_id = None
+        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            current_group_id = update.effective_chat.id
+            
+        # Process the successfully parsed rows
+        for i, row in enumerate(rows_parsed, 1):
+            try:
+                # Check if we have text and link - the minimum required fields
+                text = row.get("text", "").strip()
+                link = row.get("link", "").strip()
+                
+                if not text or not link:
+                    logger.warning(f"Skipping row {i}: Missing required text or link field")
+                    continue
+                    
+                # Create entry with defaults for missing fields
+                new_entry = {
+                    "text": text,
+                    "link": link,
+                    "category": row.get("category", "General").strip() or "General",
+                    "group_id": row.get("group_id", "").strip()
+                }
+                
+                # If in a group and no group_id specified, assign current group
+                if current_group_id and not new_entry["group_id"]:
+                    new_entry["group_id"] = str(current_group_id)
+                    
+                uploaded_entries.append(new_entry)
+            except Exception as row_error:
+                logger.error(f"Error processing row {i}: {str(row_error)}")
+                # Continue processing other rows despite this error
+        # Clean up temp file at the end
+        try:
+            os.unlink(file_path)
+        except Exception as e:
+            logger.error(f"Error cleaning up temp file: {str(e)}")
+        
+        if not uploaded_entries:
+            await processing_status.edit_text("No valid entries found in the CSV file.")
+            return
+        
+        # Confirm before overwriting
+        await processing_status.delete()
+        message = f"✅ Found {len(uploaded_entries)} valid entries in the CSV file. Do you want to:"
+        keyboard = [
+            [
+                InlineKeyboardButton("Replace All", callback_data="csv:replace"),
+                InlineKeyboardButton("Append", callback_data="csv:append"),
+            ],
+            [InlineKeyboardButton("Cancel", callback_data="csv:cancel")]
+        ]
+        
+        # Store entries for later use
+        context.user_data["uploaded_entries"] = uploaded_entries
+        
+        await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    except Exception as e:
+        logger.error(f"Error processing CSV upload: {str(e)}")
+        try:
+            await processing_status.delete()
+        except:
+            pass  # Ignore if status message already deleted
+        await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
+
+async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle callback queries for CSV operations."""
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data.split(":", 1)[1]
+    
+    if action == "cancel":
+        await query.edit_message_text("CSV import canceled.")
+        return
+    
+    uploaded_entries = context.user_data.get("uploaded_entries", [])
+    
+    if not uploaded_entries:
+        await query.edit_message_text("No entries to process.")
+        return
+    
+    try:
+        # Determine group ID for group-specific entries
+        group_id = None
+        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            group_id = update.effective_chat.id
+        
+        if action == "replace":
+            # If in a group, only replace entries for this group
+            if group_id:
+                # Keep entries that don't belong to this group
+                other_entries = [entry for entry in read_entries() 
+                                if entry.get("group_id") and entry.get("group_id") != str(group_id)]
+                
+                # Add the new entries for this group
+                combined_entries = other_entries + uploaded_entries
+                success = write_entries(combined_entries)
+                message = f"✅ Successfully replaced {len(uploaded_entries)} entries for this group." if success else "❌ Failed to update entries."
+            else:
+                # In private chat, replace all entries
+                success = write_entries(uploaded_entries)
+                message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
+        
+        elif action == "append":
+            # Append to existing entries
+            current_entries = read_entries()
+            
+            # Use a more comprehensive way to check for duplicates
+            new_entries = []
+            existing_count = 0
+            
+            for entry in uploaded_entries:
+                # Check if this exact entry already exists
+                is_duplicate = False
+                for existing in current_entries:
+                    if (existing["text"] == entry["text"] and 
+                        existing["link"] == entry["link"] and
+                        (not group_id or existing.get("group_id", "") == str(group_id))):
+                        is_duplicate = True
+                        existing_count += 1
+                        break
+                
+                if not is_duplicate:
+                    new_entries.append(entry)
+            
+            # Combine and save
+            combined_entries = current_entries + new_entries
+            success = write_entries(combined_entries)
+            
+            message = f"✅ Added {len(new_entries)} new entries (skipped {existing_count} duplicates)." if success else "❌ Failed to update entries."
+        
+        await query.edit_message_text(message)
+        
+    except Exception as e:
+        logger.error(f"Error handling CSV action: {str(e)}")
+        await query.edit_message_text(f"Error: {str(e)}")
+
+# Modify your main function to use the status monitor
+async def main():
+    """Start the bot."""
+    # Load environment variables
+    load_dotenv()
+    
+    # Initialize bot token and admin IDs
+    bot_token = BOT_TOKEN
+    admin_ids = [int(id.strip()) for id in os.getenv("ADMIN_USER_IDS", "").split(",") if id.strip()]
+    
+    # Initialize status monitor
+    status_monitor = BotStatusMonitor(bot_token, admin_ids)
+    
+    # Send startup notification
+    await status_monitor.send_startup_notification()
+    
+    try:
+        # Initialize your application
+        application = Application.builder().token(bot_token).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        # ... other handlers ...
+        # Standard command handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", start))
+        application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
+        application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
+        application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
+        application.add_handler(CommandHandler("download", download_csv))  # Admin-only
+        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
+        application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
+        application.add_handler(CommandHandler("here", here_command))  # Available to all users
+        application.add_handler(CommandHandler("logs", show_logs))  # New logs command
+    
+        # Enhanced callback query handlers
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cat:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
+        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
+    
+        # Document handler for CSV upload - more permissive to handle different formats
+        application.add_handler(
+            MessageHandler(
+                (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
+                filters.REPLY, 
+                handle_csv_upload
+            )
+        )
+    
+        # Start health check server (if needed)
+        # Note: We comment this out because the run_health_server function might not exist
+        # health_thread = threading.Thread(target=run_health_server, daemon=True)
+        # health_thread.start()
+        
+        # Schedule periodic health checks
+        async def periodic_health_check():
+            while True:
+                await status_monitor.send_health_check()
+                await asyncio.sleep(3600)  # Check every hour
+        
+        # Create the health check task
+        health_check_task = asyncio.create_task(periodic_health_check())
+        
+        # Run the bot (only run once)
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except Exception as e:
+        # Send shutdown notification with error
+        await status_monitor.send_shutdown_notification(f"Error: {str(e)}")
+        raise
+    finally:
+        # Send shutdown notification
+        await status_monitor.send_shutdown_notification()
+
+
+if __name__ == "__main__":
+    # Since we're using nest_asyncio, we can run both Flask and the Telegram bot
+    import threading
+    import asyncio
+    
+    def start_flask():
+        try:
+            # Try to use waitress for production deployment
+            try:
+                from waitress import serve
+                logger.info("Starting Flask server with waitress on port 8081")
+                serve(app, host="0.0.0.0", port=8081)
+            except ImportError:
+                # Fallback to Flask's built-in server
+                logger.info("Waitress not available, using Flask's built-in server on port 8081")
+                app.run(host="0.0.0.0", port=8081, debug=False)
+        except Exception as e:
+            logger.error(f"Failed to start Flask server: {e}")
+    
+    # Start Flask in a background thread
+    flask_thread = threading.Thread(target=start_flask)
+    flask_thread.daemon = True  # Thread will exit when main thread exits
+    flask_thread.start()
+    
+    # Start the Telegram bot in the main thread
+    logger.info("Starting Summarizer2 Telegram Bot")
+    try:
+        # With nest_asyncio.apply() already called, we can use asyncio.run safely
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Error in main process: {e}")
