@@ -1381,7 +1381,10 @@ async def main():
         # Schedule periodic health checks
         async def periodic_health_check():
             while True:
-                await status_monitor.send_health_check()
+                try:
+                    await status_monitor.send_health_check()
+                except Exception as e:
+                    logging.error(f"Periodic health check failed: {e}")
                 await asyncio.sleep(3600)  # Check every hour
         
         # Create the health check task
