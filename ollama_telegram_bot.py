@@ -22,7 +22,6 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-from transformers import AutoModelForQuestionAnswering, AutoTokenizer, pipeline
 import torch
 from flask import Flask, jsonify
 import logging.handlers
@@ -156,7 +155,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAFC1AAA-kXHGBvLM4NuJitscOdk5whThGQ" # Bot token should be provided via environment variable
+BOT_TOKEN = "6614402193:AAHuCjiipchWzjsfobP4DQAQZxtZQYKdHEc" # Bot token should be provided via environment variable
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -185,7 +184,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration (around line 44)
-MODEL_NAME = "microsoft/bitnet-b1.58-2B-4T"  # Better performance for Q&A and summarization
+MODEL_NAME = "google/flan-t5-small"   # Better compatibility and faster loading
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
@@ -411,12 +410,10 @@ async def load_llm():
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
         logger.info("Tokenizer loaded successfully")
         
-        model = AutoModelForQuestionAnswering.from_pretrained(
+        model = AutoModelForSeq2SeqLM.from_pretrained(
             MODEL_NAME,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=torch.float32,  # Use float32 for better compatibility
             device_map="auto",
-            # Add low_cpu_mem_usage=True for better memory management
             low_cpu_mem_usage=True
         )
         logger.info(f"Model loaded successfully on device: {model.device}")
@@ -526,7 +523,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Send response to the replied user
         await thinking_message.delete()
         await replied_msg.reply_text(
-            f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{final_answer}",
+            f"{replied_user.mention_html()}, {final_answer}",
             parse_mode=ParseMode.HTML
         )
         
@@ -870,7 +867,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:\n\n
+    return f"""You are a friendly, helpful AI assistant with a personality. Use 1-2 relevant emojis in your responses. Match the emotional tone of the user's question. If it's casual or contains banter, be casual and witty in return. If it's formal, be professional. Answer questions clearly and concisely based on the provided knowledge base. If the question is not related to the knowledge base, provide a helpful response anyway rather than saying you can't answer. Never repeat the question back to the user in your answer.\n\n
     Question: {question}\n\n
     Knowledge Base:\n{context_text}"""
 
@@ -903,20 +900,18 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
         ).to(model.device)
         
         logger.info("Generating response...")
-        # Modified for Seq2Seq models like T5
+        # Generation parameters optimized for personality
         outputs = model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask", None),
-            max_length=200,
+            max_length=200,  # Allow longer responses for more personality
             min_length=30,
-            do_sample=True,
-            top_p=0.95,
-            temperature=0.7,
+            do_sample=True,  # Enable sampling for more diverse responses
+            temperature=0.7,  # Add creativity
+            top_p=0.9,  # Nucleus sampling
             num_return_sequences=1,
             pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            max_time=30.0,
-            repetition_penalty=1.2
+            eos_token_id=tokenizer.eos_token_id
         )
         
         logger.info("Decoding response...")
@@ -925,7 +920,7 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
         return decoded_output.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
-        raise RuntimeError(f"Failed to generate response: {str(e)}")
+        return f"Sorry, I couldn't generate a response. Error: {str(e)[:100]}"
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
@@ -967,8 +962,8 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
 
-        # Format the final answer in Markdown
-        output = f"**Question:** {question}\n\n{final_answer}"
+        # Just use the final answer directly, without repeating the question
+        output = final_answer
 
         # Send final response
         await thinking_message.delete()
