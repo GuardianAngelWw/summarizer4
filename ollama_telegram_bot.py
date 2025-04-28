@@ -29,6 +29,29 @@ import requests
 import json
 from flask import Flask, jsonify
 import logging.handlers
+from telegram.constants import ParseMode
+
+async def send_csv_to_log_channel(context: ContextTypes.DEFAULT_TYPE):
+    """Send the CSV file to the log channel daily."""
+    log_channel_id = -1001925908750  # Logs channel ID
+    file_path = ENTRIES_FILE  # Path to the CSV file
+
+    if not os.path.exists(file_path):
+        await context.bot.send_message(
+            chat_id=log_channel_id,
+            text="No entries file exists yet to send to the log channel."
+        )
+        return
+
+    try:
+        await context.bot.send_document(
+            chat_id=log_channel_id,
+            document=open(file_path, "rb"),
+            filename="daily_entries_log.csv",
+            caption="📊 Daily CSV Log File",
+        )
+    except Exception as e:
+        logger.error(f"Failed to send CSV file to log channel: {str(e)}")
 # Groq API client will be imported as needed
 
 # No need for duplicate imports as they're already defined above
@@ -259,6 +282,20 @@ def admin_only(func):
             await update.message.reply_text("Sorry, this command is restricted to admins only.")
             return
             
+        return await func(update, context, *args, **kwargs)
+    return wrapped
+
+def admin_only(func):
+    """Decorator to restrict command access to admin users only by ID"""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        
+        # Check if user is in ADMIN_USERS
+        if user_id not in ADMIN_USERS:
+            await update.message.reply_text("Sorry, this command is restricted to admins only.")
+            return
+        
         return await func(update, context, *args, **kwargs)
     return wrapped
 
@@ -862,10 +899,26 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:\n\n
-    while answering must start with "WB SERVICE 🚓🚨🚔🚨🚓:" and then answer followed also don't forget to put the answer concise, understandable, easy and also must put telegram markdown for source links to a word(most relevant) in the answer with [relevant word](source link). Try to send the messages in the same tone as the question asked to be funny, 
-    When asked a question from out of the context try to give a funny befitting reply in just 1 line.
-    Knowledge Base:\n{context_text}"""
+    """
+    Build the prompt for the LLM to ensure the output is concise, formatted correctly, and context-aware.
+
+    :param question: The user's question.
+    :param context_text: The context or knowledge base to include in the prompt.
+    :return: A formatted prompt string.
+    """
+    return f"""
+You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:
+- While answering, the response must start with "WB SERVICE 🚓🚨🚔🚨🚓:".
+- Answers should be concise, understandable, and easy to read.
+- Use Telegram Markdown formatting for the response.
+- When asked a question outside of the provided context, give a humorous and befitting reply in just one line.
+
+Knowledge Base:
+{context_text}
+
+Question:
+{question}
+"""
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
@@ -885,6 +938,9 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     return answer
 
 async def generate_response(prompt: str, _, __=None) -> str:
+    """
+    Generate a response based on the provided prompt.
+    """
     try:
         logger.info("Sending request to Groq API...")
         
@@ -895,8 +951,6 @@ async def generate_response(prompt: str, _, __=None) -> str:
         client = AsyncGroq(api_key=GROQ_API_KEY)
         
         # Make sure we're using a valid model name
-        # Some common Groq models: llama3-70b-8192, llama3-8b-8192, mixtral-8x7b-32768
-        # The model should be without hyphens in "versatile" if that was the issue
         valid_model = GROQ_MODEL
         if valid_model == "llama-3.3-70b-versatile":
             valid_model = "llama3-70b-8192"
@@ -907,20 +961,27 @@ async def generate_response(prompt: str, _, __=None) -> str:
             model=valid_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=200,  # Increased for more detailed responses
-            top_p=0.95,      # Slightly increased for better creativity
+            max_tokens=200,
+            top_p=0.95,
         )
         
         # Extract the response
-        response = chat_completion.choices[0].message.content
+        response = chat_completion.choices[0].message.content.strip()
+
+        # Ensure the response starts with the required prefix
+        if not response.startswith("WB SERVICE 🚓🚨🚔🚨🚓:"):
+            response = f"WB SERVICE 🚓🚨🚔🚨🚓: {response}"
         
         logger.info("Received response from Groq API")
-        return response.strip()
+        return response
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle the /ask command to respond to user questions.
+    """
     question = " ".join(context.args)
     if not question:
         await update.message.reply_text(
@@ -930,7 +991,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     # Send initial thinking message
-    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
+    thinking_message = await update.message.reply_text("💣")
 
     # Load knowledge base
     group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
@@ -944,12 +1005,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context_entries = "\n\n".join(
         f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
     )
-    prompt = f"""You are an AI assistant. Answer the question concisely based on the provided knowledge base. Include hyperlinks where appropriate.
-
-    Question: {question}
-
-    Knowledge Base:
-    {context_entries}"""
+    prompt = build_prompt(question, context_entries)
 
     # Generate response
     try:
@@ -1342,7 +1398,12 @@ async def main():
         
         # Create the health check task
         health_check_task = asyncio.create_task(periodic_health_check())
-        
+         # Schedule daily CSV sending
+        application.job_queue.run_daily(
+            send_csv_to_log_channel,
+            time=datetime.time(hour=0, minute=0, second=0, tzinfo=pytz.UTC),  # Schedule at midnight UTC
+            name="daily_csv_sender"
+        )       
         # Run the bot (only run once)
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
