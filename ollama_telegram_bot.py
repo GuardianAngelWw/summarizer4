@@ -517,9 +517,11 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         # Send response to the replied user
         await thinking_message.delete()
+        # Inside the here_command function:
         await replied_msg.reply_text(
-            f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{final_answer}",
-            parse_mode=ParseMode.HTML
+            f"{replied_user.mention_html()}, {final_answer}",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True  # Disable Telegram link previews and web previews
         )
         
         # Delete the original command message
@@ -971,7 +973,11 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Send final response
         await thinking_message.delete()
-        await update.message.reply_html(output)
+        # Inside the ask_question function:
+        await update.message.reply_html(
+            output,
+            disable_web_page_preview=True  # Disable Telegram link previews and web previews
+        )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
