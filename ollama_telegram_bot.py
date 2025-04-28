@@ -158,7 +158,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAGFopELRMNDzTda5jWy_qsHoPeyuIRMC6A"
+BOT_TOKEN = "6614402193:AAG30nfyYZpQdCku1rV8IrSjnmjQaazbWIs"
 LOGS_CHANNEL_ID = os.environ.get("LOGS_CHANNEL_ID")
 
 # Content filtering function
