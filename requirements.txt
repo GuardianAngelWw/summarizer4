@@ -15,3 +15,4 @@ watchdog>=2.1.9
 groq
 nest_asyncio
 psutil
+python-telegram-bot[job-queue]
