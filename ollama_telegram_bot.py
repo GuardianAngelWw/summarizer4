@@ -286,19 +286,7 @@ def admin_only(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-def admin_only(func):
-    """Decorator to restrict command access to admin users only by ID"""
-    @wraps(func)
-    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user.id
-        
-        # Check if user is in ADMIN_USERS
-        if user_id not in ADMIN_USERS:
-            await update.message.reply_text("Sorry, this command is restricted to admins only.")
-            return
-        
-        return await func(update, context, *args, **kwargs)
-    return wrapped
+
 
 def get_categories() -> List[str]:
     """Get the list of categories."""
@@ -1390,9 +1378,8 @@ async def main():
         
         # Create the health check task
         health_check_task = asyncio.create_task(periodic_health_check())
-        # Ensure application object is initialized before calling job_queue
-        application = Application.builder().token(bot_token).build()
-         # Schedule daily CSV sending
+        
+        # Schedule daily CSV sending
         application.job_queue.run_daily(
             send_csv_to_log_channel,
             time=time(hour=0, minute=0, second=0, tzinfo=pytz.UTC),  # Schedule at midnight UTC
