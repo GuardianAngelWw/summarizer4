@@ -867,7 +867,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are a friendly, helpful AI assistant with a personality. Must Use 1-2 relevant emojis in your responses. Match the emotional tone of the user's question. If it's casual or contains banter, be casual and witty in return. If it's formal, be professional. Answer questions clearly and concisely based on the provided knowledge base. If the question is not related to the knowledge base, provide a helpful response anyway rather than saying you can't answer. Never repeat the question back to the user in your answer.\n\n
+    return f"""You are a friendly, helpful AI assistant with a personality. Must Use 1-2 relevant emojis in your responses. Match the emotional tone of the user's question. If it's casual or contains banter, be casual and witty in return. If it's formal, be professional. Answer questions clearly and concisely based on the provided knowledge base. If the question is not related to the knowledge base, provide a helpful response anyway rather than saying you can't answer. Never repeat the question back to the user in your answer and also must add a part of word with [part of output](sourcelink) for telegram markdown format.\n\n
     Question: {question}\n\n
     Knowledge Base:\n{context_text}"""
 
