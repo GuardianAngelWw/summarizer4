@@ -897,28 +897,16 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    """
-    Build the prompt for the LLM to ensure the output is concise, formatted correctly, and context-aware.
+    return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
+    - While answering, always start with "WB SERVICE 🚓🚨🚔🚨🚓:" and ensure the answer is concise, understandable, and easy to follow. Use Telegram markdown formatting where appropriate.
+    - If the question contains any NSFW-themed content or inappropriate topics, reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output.
+    - For questions outside the context of the knowledge base, provide a funny, befitting reply in just one line.
 
-    :param question: The user's question.
-    :param context_text: The context or knowledge base to include in the prompt.
-    :return: A formatted prompt string.
-    """
-    return f"""
-You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:
-- While answering, the response must start with "WB SERVICE  🚓🚨🚔🚨🚓:".
-- Answers should be concise, understandable, and easy to read.
-- Use Telegram Markdown formatting for the response.
-- When asked a question outside of the provided context, give a humorous and befitting reply in just one line.
+    Question: {question}
 
-Knowledge Base:
-{context_text}
-
-Question:
-{question}
-"""
+    Knowledge Base:
+    {context_text}"""
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
