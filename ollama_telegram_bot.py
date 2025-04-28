@@ -157,7 +157,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAHCMnjwDIIjpCO-P4TpxeeXSx-ltz8x5Ks"
+BOT_TOKEN = "6614402193:AAGFopELRMNDzTda5jWy_qsHoPeyuIRMC6A"
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -427,10 +427,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     is_user_admin = await is_admin(context, chat_id, user.id)
     
     help_text = (
-        f"👋 Hi {user.mention_html()}! I'm Summarizer2, an AI-powered bot for managing knowledge entries.\n\n"
+        f"👋 Hi {user.mention_html()}! I'm here to help you.\n\n"
         "Available commands:\n"
-        "/ask &lt;your question &gt; - Ask a question about the stored entries\n"
-        "/here &lt;your question &gt; - Answer a question (when replying to someone)\n"
+        "/ask &lt;your question &gt; - Ask a question about wolfblood and networks\n"
+        "/here &lt;your question &gt; - Ask a question (when replying to someone)\n"
     )
     
     if is_user_admin:
@@ -440,7 +440,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "/download - Download the current CSV file\n"
             "/upload - Upload a CSV file\n"
             "/clear - Clear all entries or entries in a specific category\n"
-            "/logs - Show last 10 log entries\n"  # Add this line
         )
         help_text += admin_text
     
@@ -461,7 +460,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not question:
         await update.message.reply_text(
             "Please provide a question after the /here command. For example:\n"
-            "/here What are the main features of Summarizer2?"
+            "/here What are some betrayal cases in wolfblood?"
         )
         return
     
@@ -863,8 +862,9 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:\n\n
-    Question: {question}\n\n
+    return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:\n\n
+    while answering must start with "WB SERVICE 🚓🚨🚔🚨🚓:" and then answer followed also don't forget to put the answer concise, understandable, easy and also must put telegram markdown for source links to a word(most relevant) in the answer with [relevant word](source link). Try to send the messages in the same tone as the question asked to be funny, 
+    When asked a question from out of the context try to give a funny befitting reply in just 1 line.
     Knowledge Base:\n{context_text}"""
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
@@ -925,7 +925,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not question:
         await update.message.reply_text(
             "Please provide a question after the /ask command. For example:\n"
-            "/ask What are the main features of Summarizer2?"
+            "/ask Whose birthdays are in the month of April?"
         )
         return
 
