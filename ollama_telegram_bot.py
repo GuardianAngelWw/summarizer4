@@ -181,7 +181,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAG30nfyYZpQdCku1rV8IrSjnmjQaazbWIs"
+BOT_TOKEN = "6642970632:AAEi_Vf0nQhAyQPUKXQh1Ula83wvrtlV7Xg"
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -211,7 +211,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")  # Use the correct model name format
+GROQ_MODEL = os.getenv("GROQ_MODEL", "6642970632:AAEi_Vf0nQhAyQPUKXQh1Ula83wvrtlV7Xg")  # Correct Groq model name format
 
 # Flask app initialization
 app = Flask(__name__)
@@ -928,9 +928,7 @@ async def generate_response(prompt: str, _, __=None) -> str:
         client = AsyncGroq(api_key=GROQ_API_KEY)
         
         # Make sure we're using a valid model name
-        valid_model = GROQ_MODEL
-        if valid_model == "llama-3.3-70b-versatile":
-            valid_model = "llama3-70b-8192"
+        valid_model = "llama3-8b"  # Using the exact model identifier for Groq
         
         # Send request to Groq API
         logger.info(f"Using model: {valid_model}")
