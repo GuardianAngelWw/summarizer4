@@ -1,15 +1,9 @@
 # Core dependencies
 python-telegram-bot[webhooks]>=20.0
-transformers>=4.31.0
-torch>=2.0.0
 python-dotenv>=1.0.0
-accelerate>=0.20.0
-sentencepiece>=0.1.99
-protobuf>=3.20.0,<4.0.0
 flask>=2.2.0
 waitress>=2.1.2
 pytz>=2024.1  # Added for timezone support
-nest_asyncio
 
 # Additional utilities
 tqdm>=4.64.0
@@ -18,3 +12,5 @@ requests>=2.28.0
 
 # For logging and monitoring
 watchdog>=2.1.9
+groq
+nest_asyncio
