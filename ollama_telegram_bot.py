@@ -9,10 +9,11 @@ import json
 from typing import List, Dict, Optional, Tuple, Any, Set
 from functools import wraps
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta, time
 import pytz
 from dotenv import load_dotenv
 import nest_asyncio
+from io import StringIO
 # Apply nest_asyncio to patch the event loop
 nest_asyncio.apply()
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember, Chat
@@ -158,6 +159,46 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = "6614402193:AAGFopELRMNDzTda5jWy_qsHoPeyuIRMC6A"
+LOGS_CHANNEL_ID = os.environ.get("LOGS_CHANNEL_ID")
+
+# Content filtering function
+def contains_inappropriate_content(text):
+    """
+    Check if the provided text contains inappropriate content.
+    
+    This function uses a simple keyword-based approach for initial filtering.
+    For production use, consider using more sophisticated content moderation APIs.
+    
+    Args:
+        text (str): The text to check for inappropriate content
+        
+    Returns:
+        bool: True if inappropriate content is detected, False otherwise
+    """
+    # List of inappropriate words to filter
+    # This is a basic implementation - in production, use more comprehensive solutions
+    inappropriate_words = [
+        # Profanity
+        "fuck", "shit", "ass", "bitch", "cunt", "damn", "dick", "cock", "pussy", 
+        # Hate speech indicators
+        "nigger", "faggot", "retard", "chink", "spic", "kike", "wetback",
+        # Violence
+        "kill yourself", "commit suicide", "how to kill",
+        # Adult content
+        "pornhub", "xvideos", "porn", "xxx", 
+        # Illegal activity
+        "how to hack", "steal credit card", "buy illegal drugs"
+    ]
+    
+    # Convert to lowercase for case-insensitive matching
+    text_lower = text.lower()
+    
+    # Check for inappropriate words
+    for word in inappropriate_words:
+        if word in text_lower:
+            return True
+    
+    return False
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -183,6 +224,7 @@ CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
 ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
+JSON_ENTRIES_FILE = "interaction_logs.json"  # File to store interaction logs with timestamps
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration for Groq API
@@ -920,7 +962,124 @@ async def generate_response(prompt: str, _, __=None) -> str:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
+def load_entries_from_json(user_id=None):
+    """
+    Load interaction logs from JSON file based on user_id.
+    Returns a list of dictionaries with user interactions.
+    """
+    try:
+        if os.path.exists(JSON_ENTRIES_FILE):
+            with open(JSON_ENTRIES_FILE, 'r', encoding='utf-8') as f:
+                interactions = json.load(f)
+            
+            if user_id:
+                return [entry for entry in interactions if entry.get('user_id') == user_id]
+            return interactions
+        return []
+    except Exception as e:
+        logger.error(f"Error loading entries from JSON: {str(e)}")
+        return []
+
+def save_interaction_to_json(user_id, question, answer, group_id=None):
+    """
+    Save user interaction to JSON log file with timestamp.
+    """
+    try:
+        # Load existing interactions
+        interactions = []
+        if os.path.exists(JSON_ENTRIES_FILE):
+            with open(JSON_ENTRIES_FILE, 'r', encoding='utf-8') as f:
+                interactions = json.load(f)
+        
+        # Add new interaction
+        interaction = {
+            'timestamp': datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S'),
+            'user_id': user_id,
+            'question': question,
+            'answer': answer,
+            'group_id': group_id
+        }
+        interactions.append(interaction)
+        
+        # Save updated interactions
+        with open(JSON_ENTRIES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(interactions, f, ensure_ascii=False, indent=2)
+            
+    except Exception as e:
+        logger.error(f"Error saving interaction to JSON: {str(e)}")
+
+async def send_daily_csv_logs(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Send daily CSV logs to the logs channel.
+    """
+    try:
+        logs_channel_id = os.getenv("LOGS_CHANNEL_ID")
+        if not logs_channel_id:
+            logger.error("LOGS_CHANNEL_ID environment variable is not set")
+            return
+            
+        # Create a CSV file with today's date
+        today = datetime.now(pytz.UTC).strftime('%Y-%m-%d')
+        csv_filename = f"logs_{today}.csv"
+        
+        # Get all interactions from the JSON file
+        interactions = load_entries_from_json()
+        
+        # Filter interactions for today
+        today_interactions = []
+        for interaction in interactions:
+            timestamp = interaction.get('timestamp', '')
+            if timestamp.startswith(today):
+                today_interactions.append(interaction)
+        
+        if not today_interactions:
+            await context.bot.send_message(
+                chat_id=logs_channel_id,
+                text=f"No interactions recorded for {today}."
+            )
+            return
+            
+        # Create CSV file
+        with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Timestamp', 'User ID', 'Question', 'Answer', 'Group ID'])
+            
+            for interaction in today_interactions:
+                writer.writerow([
+                    interaction.get('timestamp', ''),
+                    interaction.get('user_id', ''),
+                    interaction.get('question', ''),
+                    interaction.get('answer', ''),
+                    interaction.get('group_id', '')
+                ])
+        
+        # Send CSV file to logs channel
+        with open(csv_filename, 'rb') as f:
+            await context.bot.send_document(
+                chat_id=logs_channel_id,
+                document=f,
+                filename=csv_filename,
+                caption=f"📊 Daily interaction logs for {today} - {len(today_interactions)} interactions"
+            )
+            
+        # Clean up the file
+        os.remove(csv_filename)
+        logger.info(f"Daily CSV logs sent to channel {logs_channel_id}")
+        
+    except Exception as e:
+        logger.error(f"Error sending daily CSV logs: {str(e)}")
+
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Get user info for logging
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "Unknown"
+    group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
+    group_name = update.effective_chat.title if group_id else "Direct Message"
+    
+    # Log the interaction attempt
+    logger.info(f"User {username} (ID: {user_id}) in {group_name} (ID: {group_id}) is asking a question")
+    
+    # Get the question from arguments
     question = " ".join(context.args)
     if not question:
         await update.message.reply_text(
@@ -928,33 +1087,105 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/ask Whose birthdays are in the month of April?"
         )
         return
+        
+    # Content filtering - check for inappropriate content
+    if contains_inappropriate_content(question):
+        await update.message.reply_text(
+            "I'm sorry, but your question contains content that appears to violate our usage policy. "
+            "Please rephrase your question appropriately."
+        )
+        logger.warning(f"Filtered inappropriate content from user {username} (ID: {user_id}): {question}")
+        return
 
     # Send initial thinking message
     thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
 
     # Load knowledge base
-    group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
     entries = read_entries(group_id=group_id)
     if not entries:
         await thinking_message.delete()
         await update.message.reply_text("No knowledge entries found to answer your question.")
         return
 
-    # Build context and prompt
+    # Build context and prompt with improved prompt handling
     context_entries = "\n\n".join(
         f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
     )
-    prompt = f"""You are an AI assistant. Answer the question concisely based on the provided knowledge base. Include hyperlinks where appropriate.
-
+    
+    # Enhanced prompt with clear instructions and context guidelines
+    prompt = f"""You are an AI assistant tasked with providing accurate, helpful answers based on the provided knowledge base.
+    
+    Guidelines:
+    1. Answer the question concisely and factually based ONLY on the provided knowledge base.
+    2. If the knowledge base doesn't contain relevant information, say "I don't have enough information to answer this question."
+    3. Include specific references to sources when possible using markdown format links [text](url).
+    4. Be objective and factual in your responses.
+    5. Prioritize recent information when multiple sources conflict.
+    6. Do not make up information that isn't in the knowledge base.
+    
     Question: {question}
-
+    
     Knowledge Base:
     {context_entries}"""
+    
+    # Save this interaction to JSON for analysis
+    interaction_data = {
+        "timestamp": datetime.now().isoformat(),
+        "user_id": user_id,
+        "username": username,
+        "group_id": group_id,
+        "group_name": group_name,
+        "question": question,
+    }
+    
+    try:
+        # Generate answer using the LLM
+        answer = await generate_response(prompt, None)
+        
+        # Update interaction data with the answer
+        interaction_data["answer"] = answer
+        interaction_data["status"] = "success"
+        
+        # Save the interaction data
+        save_interaction_to_json(interaction_data)
+        
+        # Format any links in the response
+        formatted_answer = format_links(answer)
+        
+        # Delete the thinking message and send the answer
+        await thinking_message.delete()
+        await update.message.reply_text(formatted_answer, parse_mode=ParseMode.MARKDOWN)
+        
+        # Log the successful interaction
+        logger.info(f"Successfully answered question from {username} (ID: {user_id})")
+        
+    except Exception as e:
+        # Log the error
+        error_msg = str(e)
+        logger.error(f"Error answering question: {error_msg}")
+        
+        # Update interaction data with error information
+        interaction_data["status"] = "error"
+        interaction_data["error"] = error_msg
+        save_interaction_to_json(interaction_data)
+        
+        # Delete the thinking message and inform the user
+        await thinking_message.delete()
+        await update.message.reply_text(f"Sorry, I encountered an error: {error_msg}")
 
     # Generate response
     try:
         await load_llm()  # Just validate API key
         answer = await generate_response(prompt, None, None)
+        
+        # Log the interaction to JSON file
+        user_id = update.effective_user.id
+        save_interaction_to_json(
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            group_id=group_id
+        )
 
         # Add hyperlinks
         keywords = {entry["text"]: entry["link"] for entry in entries}
@@ -966,6 +1197,41 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Send final response
         await thinking_message.delete()
         await update.message.reply_markdown(output)
+
+        # Log the interaction with timestamp and user info
+        try:
+            # Get user information
+            user_id = update.effective_user.id
+            username = update.effective_user.username or f"{update.effective_user.first_name} {update.effective_user.last_name or ''}".strip()
+            timestamp = datetime.now().isoformat()
+            
+            # Create log entry
+            log_entry = {
+                "user_id": user_id,
+                "username": username,
+                "timestamp": timestamp,
+                "prompt": question,
+                "response": answer,
+                "chat_type": update.effective_chat.type,
+                "chat_id": update.effective_chat.id
+            }
+            
+            # Add entry to JSON file
+            entries_file = JSON_ENTRIES_FILE
+            try:
+                with open(entries_file, "r", encoding="utf-8") as f:
+                    all_entries = json.load(f)
+            except (FileNotFoundError, json.JSONDecodeError):
+                all_entries = []
+                
+            all_entries.append(log_entry)
+            
+            with open(entries_file, "w", encoding="utf-8") as f:
+                json.dump(all_entries, f, ensure_ascii=False, indent=2)
+                
+            logger.info(f"Logged interaction for user {user_id} ({username})")
+        except Exception as e:
+            logger.error(f"Failed to log interaction: {str(e)}")
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
@@ -1203,6 +1469,94 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pass  # Ignore if status message already deleted
         await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
 
+async def send_daily_csv_logs(context: ContextTypes.DEFAULT_TYPE):
+    """Generate and send daily CSV logs to the admin channel"""
+    try:
+        # Get logs channel ID from environment variables
+        logs_channel_id = os.getenv("LOGS_CHANNEL_ID")
+        if not logs_channel_id:
+            logger.warning("LOGS_CHANNEL_ID not set. Cannot send daily CSV logs.")
+            return
+        
+        # Load interactions from the past 24 hours
+        entries = load_entries_from_json()
+        if not entries:
+            await context.bot.send_message(
+                chat_id=logs_channel_id,
+                text="No entries available for daily CSV log."
+            )
+            return
+        
+        # Filter entries for the last 24 hours
+        now = datetime.now()
+        yesterday = now - timedelta(days=1)
+        
+        recent_entries = []
+        for entry in entries:
+            # Check if the entry has a timestamp field
+            if "timestamp" in entry:
+                entry_time = datetime.fromisoformat(entry["timestamp"])
+                if entry_time >= yesterday:
+                    recent_entries.append(entry)
+            else:
+                # Include entries without timestamp for backward compatibility
+                recent_entries.append(entry)
+        
+        if not recent_entries:
+            await context.bot.send_message(
+                chat_id=logs_channel_id,
+                text="No new entries in the past 24 hours."
+            )
+            return
+        
+        # Create CSV in memory
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # Define headers based on available fields
+        headers = ["User ID", "Username", "Timestamp", "Prompt", "Response"]
+        writer.writerow(headers)
+        
+        # Write data
+        for entry in recent_entries:
+            row = [
+                entry.get("user_id", ""),
+                entry.get("username", ""),
+                entry.get("timestamp", ""),
+                entry.get("prompt", ""),
+                entry.get("response", "")
+            ]
+            writer.writerow(row)
+        
+        # Convert to bytes and send as document
+        csv_bytes = output.getvalue().encode()
+        current_date = now.strftime("%Y-%m-%d")
+        
+        await context.bot.send_document(
+            chat_id=logs_channel_id,
+            document=csv_bytes,
+            filename=f"summarizer_logs_{current_date}.csv",
+            caption=f"Daily CSV log for {current_date}. Total entries: {len(recent_entries)}"
+        )
+        logger.info(f"Daily CSV log sent successfully with {len(recent_entries)} entries")
+        
+    except Exception as e:
+        logger.error(f"Error sending daily CSV logs: {str(e)}")
+        # Try to notify admins about the error
+        try:
+            admin_ids = [int(id.strip()) for id in os.getenv("ADMIN_USER_IDS", "").split(",") if id.strip()]
+            if admin_ids:
+                error_message = f"Error sending daily CSV logs: {str(e)}"
+                for admin_id in admin_ids:
+                    try:
+                        await context.bot.send_message(chat_id=admin_id, text=error_message)
+                    except Exception:
+                        # Continue with other admins if one fails
+                        pass
+        except Exception:
+            # If even the error notification fails, just log it
+            logger.error("Failed to notify admins about CSV log error")
+
 async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle callback queries for CSV operations."""
     query = update.callback_query
@@ -1296,6 +1650,20 @@ async def main():
         # Initialize your application
         application = Application.builder().token(bot_token).build()
         
+        # Job queue for daily CSV logs
+        job_queue = application.job_queue
+        
+        # Schedule daily CSV logs job to run at 11:59 PM UTC
+        job_queue.run_daily(
+            send_daily_csv_logs, 
+            time=time(hour=23, minute=59), 
+            days=(0, 1, 2, 3, 4, 5, 6),  # Run every day
+            name="daily_csv_logs"
+        )
+        logger.info("Scheduled daily CSV logs job")
+        # Also send a CSV right at startup
+        job_queue.run_once(send_daily_csv_logs, 60)  # Send first log after 60 seconds of startup
+        
         # Add handlers
         application.add_handler(CommandHandler("start", start))
         # ... other handlers ...
@@ -1385,3 +1753,69 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception as e:
         logger.error(f"Error in main process: {e}")
+
+# CSV logging variables
+LOGS_CHANNEL_ID = os.getenv('LOGS_CHANNEL_ID')
+LAST_CSV_DATE = None
+DAILY_LOGS = []
+
+async def send_daily_csv_logs(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send daily CSV logs to the logs channel."""
+    global LAST_CSV_DATE, DAILY_LOGS
+    
+    if not LOGS_CHANNEL_ID:
+        logger.warning("LOGS_CHANNEL_ID not set. Daily CSV logs will not be sent.")
+        return
+    
+    try:
+        today = datetime.now().date()
+        
+        # Only send if we have logs and it's a new day or first run
+        if DAILY_LOGS and (LAST_CSV_DATE is None or today > LAST_CSV_DATE):
+            # Create CSV in memory
+            csv_buffer = StringIO()
+            csv_headers = ["timestamp", "user_id", "username", "chat_id", "message_type", "content"]
+            writer = csv.DictWriter(csv_buffer, fieldnames=csv_headers)
+            writer.writeheader()
+            writer.writerows(DAILY_LOGS)
+            
+            # Reset buffer position
+            csv_buffer.seek(0)
+            
+            # Create temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+                temp_file.write(csv_buffer.getvalue().encode())
+                temp_file.flush()
+                
+                # Send CSV file to logs channel
+                await context.bot.send_document(
+                    chat_id=LOGS_CHANNEL_ID,
+                    document=open(temp_file.name, 'rb'),
+                    filename=f"bot_logs_{today.strftime('%Y-%m-%d')}.csv",
+                    caption=f"Daily logs for {today.strftime('%Y-%m-%d')} - {len(DAILY_LOGS)} entries"
+                )
+                
+                # Update last CSV date and clear logs
+                LAST_CSV_DATE = today
+                DAILY_LOGS = []
+                
+                logger.info(f"Daily CSV logs sent to channel {LOGS_CHANNEL_ID}")
+        
+    except Exception as e:
+        logger.error(f"Error sending daily CSV logs: {str(e)}")
+
+def log_user_interaction(update: Update, message_type: str, content: str) -> None:
+    """Log user interaction to the daily logs list."""
+    if not update.effective_user:
+        return
+        
+    log_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "user_id": update.effective_user.id,
+        "username": update.effective_user.username or "Unknown",
+        "chat_id": update.effective_chat.id if update.effective_chat else "Unknown",
+        "message_type": message_type,
+        "content": content
+    }
+    
+    DAILY_LOGS.append(log_entry)
