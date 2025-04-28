@@ -519,7 +519,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await thinking_message.delete()
         # Inside the here_command function:
         await replied_msg.reply_text(
-            f"{replied_user.mention_html()}, {final_answer}",
+            f"{replied_user.mention_html()} 👇 {final_answer}",
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True  # Disable Telegram link previews and web previews
         )
