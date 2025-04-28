@@ -10,7 +10,6 @@ from typing import List, Dict, Optional, Tuple, Any, Set
 from functools import wraps
 from collections import deque
 from datetime import datetime
-from datetime import time  # Import time explicitly
 import pytz
 from dotenv import load_dotenv
 import nest_asyncio
@@ -30,29 +29,6 @@ import requests
 import json
 from flask import Flask, jsonify
 import logging.handlers
-from telegram.constants import ParseMode
-
-async def send_csv_to_log_channel(context: ContextTypes.DEFAULT_TYPE):
-    """Send the CSV file to the log channel daily."""
-    log_channel_id = -1001925908750  # Logs channel ID
-    file_path = ENTRIES_FILE  # Path to the CSV file
-
-    if not os.path.exists(file_path):
-        await context.bot.send_message(
-            chat_id=log_channel_id,
-            text="No entries file exists yet to send to the log channel."
-        )
-        return
-
-    try:
-        await context.bot.send_document(
-            chat_id=log_channel_id,
-            document=open(file_path, "rb"),
-            filename="daily_entries_log.csv",
-            caption="📊 Daily CSV Log File",
-        )
-    except Exception as e:
-        logger.error(f"Failed to send CSV file to log channel: {str(e)}")
 # Groq API client will be imported as needed
 
 # No need for duplicate imports as they're already defined above
@@ -181,7 +157,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6642970632:AAEi_Vf0nQhAyQPUKXQh1Ula83wvrtlV7Xg"
+BOT_TOKEN = "6614402193:AAGFopELRMNDzTda5jWy_qsHoPeyuIRMC6A"
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -211,7 +187,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "6642970632:AAEi_Vf0nQhAyQPUKXQh1Ula83wvrtlV7Xg")  # Correct Groq model name format
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")  # Use the correct model name format
 
 # Flask app initialization
 app = Flask(__name__)
@@ -285,8 +261,6 @@ def admin_only(func):
             
         return await func(update, context, *args, **kwargs)
     return wrapped
-
-
 
 def get_categories() -> List[str]:
     """Get the list of categories."""
@@ -886,6 +860,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
+# Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
     return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, always start with "WB SERVICE 🚓🚨🚔🚨🚓:" and ensure the answer is concise, understandable, and easy to follow. Use Telegram markdown formatting where appropriate.
@@ -915,9 +890,6 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     return answer
 
 async def generate_response(prompt: str, _, __=None) -> str:
-    """
-    Generate a response based on the provided prompt.
-    """
     try:
         logger.info("Sending request to Groq API...")
         
@@ -928,7 +900,11 @@ async def generate_response(prompt: str, _, __=None) -> str:
         client = AsyncGroq(api_key=GROQ_API_KEY)
         
         # Make sure we're using a valid model name
-        valid_model = "llama3-8b"  # Using the exact model identifier for Groq
+        # Some common Groq models: llama3-70b-8192, llama3-8b-8192, mixtral-8x7b-32768
+        # The model should be without hyphens in "versatile" if that was the issue
+        valid_model = GROQ_MODEL
+        if valid_model == "llama-3.3-70b-versatile":
+            valid_model = "llama3-70b-8192"
         
         # Send request to Groq API
         logger.info(f"Using model: {valid_model}")
@@ -936,19 +912,15 @@ async def generate_response(prompt: str, _, __=None) -> str:
             model=valid_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=200,
-            top_p=0.95,
+            max_tokens=200,  # Increased for more detailed responses
+            top_p=0.95,      # Slightly increased for better creativity
         )
         
         # Extract the response
-        response = chat_completion.choices[0].message.content.strip()
-
-        # Ensure the response starts with the required prefix
-        if not response.startswith("WB SERVICE 🚓🚨🚔🚨🚓:"):
-            response = f"WB SERVICE 🚓🚨🚔🚨🚓: {response}"
+        response = chat_completion.choices[0].message.content
         
         logger.info("Received response from Groq API")
-        return response
+        return response.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
@@ -992,7 +964,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         final_answer = add_hyperlinks(answer, keywords)
 
         # Format the final answer in Markdown
-        output = f"**Question:** {question}\n\n{final_answer}"
+        output = f"{final_answer}"
 
         # Send final response
         await thinking_message.delete()
@@ -1001,7 +973,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
         await update.message.reply_text("An error occurred while processing your question.")
-
+                                        
 @admin_only
 async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Command to clear all entries or by category."""
@@ -1368,21 +1340,12 @@ async def main():
         # Schedule periodic health checks
         async def periodic_health_check():
             while True:
-                try:
-                    await status_monitor.send_health_check()
-                except Exception as e:
-                    logging.error(f"Periodic health check failed: {e}")
+                await status_monitor.send_health_check()
                 await asyncio.sleep(3600)  # Check every hour
         
         # Create the health check task
         health_check_task = asyncio.create_task(periodic_health_check())
         
-        # Schedule daily CSV sending
-        application.job_queue.run_daily(
-            send_csv_to_log_channel,
-            time=time(hour=0, minute=0, second=0, tzinfo=pytz.UTC),  # Schedule at midnight UTC
-            name="daily_csv_sender"
-        )
         # Run the bot (only run once)
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
