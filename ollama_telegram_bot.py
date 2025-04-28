@@ -894,36 +894,53 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
 async def generate_response(prompt: str, model, tokenizer) -> str:
     try:
         logger.info("Tokenizing input...")
+        # Configure pad token if needed
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            
+        # Prepare the prompt for the deepseek model
         inputs = tokenizer(
             prompt, 
             return_tensors="pt", 
-            max_length=1024, 
+            max_length=2048,  # Increased for deepseek model capacity
             truncation=True,
             padding=True
         ).to(model.device)
         
         logger.info("Generating response...")
-        # Generation parameters optimized for personality
+        # Generation parameters optimized for the deepseek model
+        prompt_length = inputs["input_ids"].shape[1]
+        
         outputs = model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask", None),
-            max_length=400,  # Allow longer responses for more personality
-            min_length=30,
-            do_sample=True,  # Enable sampling for more diverse responses
-            temperature=0.5,  # Add creativity
-            top_p=0.9,  # Nucleus sampling
+            max_new_tokens=768,  # Increased token generation for deepseek
+            do_sample=True,  
+            temperature=0.5,  # Lower temperature for more focused responses
+            top_p=0.95,  # Slightly higher nucleus sampling
             num_return_sequences=1,
             pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id
+            repetition_penalty=1.15  # Slightly increased repetition penalty
         )
         
         logger.info("Decoding response...")
-        # For T5, we don't need to strip the prompt as it's a true seq2seq model
-        decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        return decoded_output.strip()
+        # For deepseek model, we need to skip the prompt part in the output
+        generated_sequence = outputs[0][prompt_length:]
+        decoded_output = tokenizer.decode(generated_sequence, skip_special_tokens=True)
+        
+        # Clean up and format the output
+        response = decoded_output.strip()
+        # Remove any trailing incomplete sentences
+        if response and not any(response.endswith(end) for end in [".", "!", "?", ":", ";"]):
+            last_sentence_end = max(response.rfind("."), response.rfind("!"), response.rfind("?"))
+            if last_sentence_end > 0:
+                response = response[:last_sentence_end+1]
+                
+        return response
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         return f"Sorry, I couldn't generate a response. Error: {str(e)[:100]}"
+
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
