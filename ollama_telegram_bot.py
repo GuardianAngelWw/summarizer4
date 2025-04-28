@@ -864,8 +864,8 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def build_prompt(question: str, context_text: str) -> str:
     return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
-    - **MUST** use Telegram markdown formatting for every answer with >Quote from starting of the answer to the end of the answer. Highlights the text as a quote. To quote multiple lines, add a > before each line.
-    - **MUST** use Telegram markdown formatting for every answer with [relevant word in the output](source link).
+    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
+    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
     - If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram vlockquote markdown.
     - For questions outside the context of the knowledge base, provide a funny, befitting reply in just one line, everything in markdown telegram blockquote format.
     - *NEVER* mention about the knowledge base in the output or anything if you can find, just go straight to the point of answering to the question.
@@ -971,7 +971,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Send final response
         await thinking_message.delete()
-        await update.message.reply_markdown(output)
+        await update.message.reply_html(output)
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
