@@ -184,7 +184,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration (around line 44)
-MODEL_NAME = "google/flan-t5-small"   # Better compatibility and faster loading
+MODEL_NAME = "google/flan-t5-base"   # Better compatibility and faster loading
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Flask app initialization
@@ -867,7 +867,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are a friendly, helpful AI assistant with a personality. Use 1-2 relevant emojis in your responses. Match the emotional tone of the user's question. If it's casual or contains banter, be casual and witty in return. If it's formal, be professional. Answer questions clearly and concisely based on the provided knowledge base. If the question is not related to the knowledge base, provide a helpful response anyway rather than saying you can't answer. Never repeat the question back to the user in your answer.\n\n
+    return f"""You are a friendly, helpful AI assistant with a personality. Must Use 1-2 relevant emojis in your responses. Match the emotional tone of the user's question. If it's casual or contains banter, be casual and witty in return. If it's formal, be professional. Answer questions clearly and concisely based on the provided knowledge base. If the question is not related to the knowledge base, provide a helpful response anyway rather than saying you can't answer. Never repeat the question back to the user in your answer.\n\n
     Question: {question}\n\n
     Knowledge Base:\n{context_text}"""
 
@@ -904,10 +904,10 @@ async def generate_response(prompt: str, model, tokenizer) -> str:
         outputs = model.generate(
             input_ids=inputs["input_ids"],
             attention_mask=inputs.get("attention_mask", None),
-            max_length=200,  # Allow longer responses for more personality
+            max_length=400,  # Allow longer responses for more personality
             min_length=30,
             do_sample=True,  # Enable sampling for more diverse responses
-            temperature=0.7,  # Add creativity
+            temperature=0.5,  # Add creativity
             top_p=0.9,  # Nucleus sampling
             num_return_sequences=1,
             pad_token_id=tokenizer.pad_token_id,
