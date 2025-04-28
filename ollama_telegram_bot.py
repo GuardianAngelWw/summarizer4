@@ -1386,6 +1386,8 @@ async def main():
         
         # Create the health check task
         health_check_task = asyncio.create_task(periodic_health_check())
+        # Ensure application object is initialized before calling job_queue
+        application = Application.builder().token(bot_token).build()
          # Schedule daily CSV sending
         application.job_queue.run_daily(
             send_csv_to_log_channel,
