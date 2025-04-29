@@ -241,8 +241,13 @@ if not os.path.exists(CATEGORIES_FILE):
 async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
     """Check if the user is an admin in a specific chat."""
     try:
-        return user_id in ADMIN_USERS
-
+        # For private chats, always consider the user an admin if they're in ADMIN_USERS
+        if chat_id == user_id:
+            return user_id in ADMIN_USERS
+            
+        # For groups, check if user is an admin in that group
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        return user_id in ADMIN_USERS or chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.CREATOR]
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
@@ -765,7 +770,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     data = query.data
 
     # Only restrict certain actions to admins
-    if data.startswith(("delete:", "clear:", "confirm_clear:")):
+    if data.startswith(("delete:", "clear:", "confirm_clear:", "cat:")):
         is_user_admin = await is_admin(context, chat_id, user_id)
         if not is_user_admin:
             await query.answer("Sorry, only admins can use these controls.", show_alert=True)
