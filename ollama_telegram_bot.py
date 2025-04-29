@@ -770,7 +770,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     data = query.data
 
     # Only restrict certain actions to admins
-    if data.startswith(("delete:", "clear:", "confirm_clear:", "cat:")):
+    if data.startswith(("delete:", "clear:", "confirm_clear:")):
         is_user_admin = await is_admin(context, chat_id, user_id)
         if not is_user_admin:
             await query.answer("Sorry, only admins can use these controls.", show_alert=True)
