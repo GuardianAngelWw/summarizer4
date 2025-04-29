@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAEZZlCBJTFUPd4ZzJP3OdXsTETR6X707cA"
+BOT_TOKEN = "6187442999:AAG7XeZo-xozShvUu3GOejTeXehHjjfWc1I"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -508,7 +508,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     replied_user = replied_msg.from_user
     
     # Send initial thinking message
-    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
+    thinking_message = await update.message.reply_text("🔍 Thinking...")
     
     # Determine group ID for group-specific entries if in a group chat
     group_id = None
@@ -529,12 +529,10 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     try:
         # Load LLM components
-        await thinking_message.edit_text("🤔")
+        await thinking_message.edit_text("🔍 Processing...")
         
         # Just validate API key
         await load_llm()
-        
-        await thinking_message.edit_text("⚡")
         
         # Create context from entries with categories
         context_entries = []
@@ -557,11 +555,19 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Send response to the replied user
         await thinking_message.delete()
         # Inside the here_command function:
-        await replied_msg.reply_text(
-            f"{replied_user.mention_html()} 👇 {final_answer}",
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True  # Disable Telegram link previews and web previews
-        )
+        try:
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()} 👇 {final_answer}",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True  # Disable Telegram link previews and web previews
+            )
+        except Exception as e:
+            logger.error(f"Failed to send HTML message: {str(e)}")
+            # Fallback to plain text if HTML fails
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()}, I encountered an error formatting the response. Please try again.",
+                parse_mode=ParseMode.HTML
+            )
         
         # Delete the original command message
         try:
@@ -926,35 +932,43 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
-    - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
-    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
-    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
-    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
-    - **MUST** read the whole question so every word of the question makes sense in the output.
-    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
-    - **NEVER** reply out-of-context or out of entries questions.
+    return f"""You are an AI assistant. Based on the provided knowledge base, summarize the context and provide a solution to the question.
+
+    Formatting instructions:
+    - Your response MUST be wrapped in Telegram HTML format <blockquote>your answer here</blockquote>
+    - Use proper Telegram HTML formatting: <b>bold</b>, <i>italic</i>
+    - For links, use <a href="actual_url">link text</a>
+    - Keep answers concise, understandable, and to the point
+    - Do NOT include any formatting errors or unsupported tags
+    - If the question contains NSFW content, respond only with: <blockquote>/report WB POLICE 🚓🚨🚔🚨🚓</blockquote>
+    - Never mention that you're using a knowledge base
 
     Question: {question}
 
     Knowledge Base:
-    {context_text}"""
+    {context_text}
+    
+    Important: Start your response with <blockquote> and end with </blockquote>. Do not use any other formatting for the entire response wrapper."""
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
-    Replace keywords with Telegram markdown links in the answer.
+    Replace keywords with Telegram HTML links in the answer.
 
     :param answer: The generated answer text.
     :param keywords: A dictionary of keywords and their corresponding URLs.
     :return: Updated answer with hyperlinks.
     """
-    for word, url in keywords.items():
-        # Replace only the full word or part of word with the hyperlink
-        answer = re.sub(
-            rf"(?<!\w)({re.escape(word)})(?!\w)",  # Match word boundaries to replace only intended parts
-            f"[\\1]({url})",  # Telegram markdown format
-            answer
-        )
+    # Don't try to add hyperlinks to responses that already have HTML formatting
+    # Just return the original response if it contains HTML tags
+    if '<blockquote>' in answer or '</blockquote>' in answer:
+        return answer
+        
+    # If no HTML tags yet, wrap the response in blockquote tags as needed
+    if not answer.startswith('<blockquote>'):
+        answer = f'<blockquote>{answer}</blockquote>'
+        
+    # Skip hyperlink replacements as they might be causing formatting issues
+    # We'll rely on the model to properly format links in HTML
     return answer
 
 async def generate_response(prompt: str, _, __=None) -> str:
@@ -1006,7 +1020,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     # Send initial thinking message
-    thinking_message = await update.message.reply_text("💣")
+    thinking_message = await update.message.reply_text("🔍 Thinking...")
 
     # Load knowledge base
     group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
@@ -1037,10 +1051,17 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Send final response
         await thinking_message.delete()
         # Inside the ask_question function:
-        await update.message.reply_html(
-            output,
-            disable_web_page_preview=True  # Disable Telegram link previews and web previews
-        )
+        try:
+            await update.message.reply_html(
+                output,
+                disable_web_page_preview=True  # Disable Telegram link previews and web previews
+            )
+        except Exception as e:
+            logger.error(f"Failed to send HTML message: {str(e)}")
+            # Fallback to plain text if HTML fails
+            await update.message.reply_text(
+                "I encountered an error formatting the response. Please try again."
+            )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
