@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6187442999:AAGkTycBoJ4HXbh-nLV2n2cT5iUYvEuUxXg"
+BOT_TOKEN = "6614402193:AAEZZlCBJTFUPd4ZzJP3OdXsTETR6X707cA"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -182,7 +182,7 @@ if not logging.getLogger().handlers:
     )
 
 # Update the env variables (around line 37)
-ADMIN_USER_IDS = "6691432218, 5980915474"
+ADMIN_USER_IDS = "5980915474"
 ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",") if uid.strip()]
 CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
@@ -936,7 +936,7 @@ def build_prompt(question: str, context_text: str) -> str:
                 - **you are an AI** instead say siminlar that you're **assisting wolfblood**
                 - **context / provided context / knowledge base anything siminar**
                 - **groq / your model / any personal details**
-    - **MUST** reply out-of-context questions with a befitting **ONE LINE OUTPUT ONLY**, make it **look punchy**.
+    - **NEVER** reply out of entries based questions. tell them you will **only service wolfblood queries**.
 
     Question: {question}
 
