@@ -244,10 +244,7 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
         # For private chats, always consider the user an admin if they're in ADMIN_USERS
         if chat_id == user_id:
             return user_id in ADMIN_USERS
-            
-        # For groups, check if user is an admin in that group
-        chat_member = await context.bot.get_chat_member(chat_id, user_id)
-        return user_id in ADMIN_USERS or chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.CREATOR]
+
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
