@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAG30nfyYZpQdCku1rV8IrSjnmjQaazbWIs"
+BOT_TOKEN = "6642970632:AAHHhfIz-dj8FUKgxOhRDVkKSW26kRNKACg"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -903,6 +903,26 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ]
         
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    # Handle confirm clear action
+    elif data.startswith("confirm_clear:"):
+        category_filter = data.split(":")[1]
+        category = None if category_filter == 'all' else category_filter
+        
+        # Determine group ID for group-specific entries
+        group_id = None
+        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            group_id = update.effective_chat.id
+            
+        count = clear_all_entries(group_id, category)
+        if count > 0:
+            await query.edit_message_text(f"✅ Successfully cleared {count} entries.")
+        else:
+            await query.edit_message_text("❌ No entries were cleared or an error occurred.")
+            
+    # Handle cancel clear action
+    elif data == "cancel_clear":
+        await query.edit_message_text("Operation cancelled.")
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
