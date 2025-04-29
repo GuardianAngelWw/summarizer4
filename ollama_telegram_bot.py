@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6642970632:AAHHhfIz-dj8FUKgxOhRDVkKSW26kRNKACg"
+BOT_TOKEN = "6614402193:AAEwYQthMDaxMNa24SEkx1Q47K-LQoGrWfU"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -182,7 +182,7 @@ if not logging.getLogger().handlers:
     )
 
 # Update the env variables (around line 37)
-ADMIN_USER_IDS = "6691432218, 5980915474"
+ADMIN_USER_IDS = "5980915474"
 ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",") if uid.strip()]
 CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
@@ -247,7 +247,7 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
             
         # For groups, check if user is an admin in that group
         chat_member = await context.bot.get_chat_member(chat_id, user_id)
-        return user_id in ADMIN_USERS or chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.CREATOR]
+        return user_id in ADMIN_USERS or chat_member.status in ["administrator", "creator"]
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
@@ -770,7 +770,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     data = query.data
 
     # Only restrict certain actions to admins
-    if data.startswith(("delete:", "clear:", "confirm_clear:", "cat:")):
+    if data.startswith(("delete:", "clear:", "confirm_clear:")):
         is_user_admin = await is_admin(context, chat_id, user_id)
         if not is_user_admin:
             await query.answer("Sorry, only admins can use these controls.", show_alert=True)
@@ -926,17 +926,14 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are *WB Networks* an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
+    return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
     - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
     - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
     - **MUST** read the whole question so every word of the question makes sense in the output.
-    - **NEVER** tell in output that is in similar as:
-                - **you are an AI** instead say siminlar that you're **assisting wolfblood**
-                - **context / provided context / knowledge base anything siminar**
-                - **groq / your model / any personal details**
-    - **MUST** reply out-of-context questions with a befitting **ONE LINE OUTPUT ONLY**, make it **look punchy**.
+    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
+    - **NEVER** reply out-of-context or out of entries questions.
 
     Question: {question}
 
