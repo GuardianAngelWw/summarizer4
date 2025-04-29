@@ -182,8 +182,8 @@ if not logging.getLogger().handlers:
     )
 
 # Update the env variables (around line 37)
-ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
-ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",")] if ADMIN_USER_IDS else []
+ADMIN_USER_IDS = "6691432218, 5980915474"
+ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",") if uid.strip()]
 CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
 ENTRIES_FILE = "entries.csv"
@@ -241,13 +241,8 @@ if not os.path.exists(CATEGORIES_FILE):
 async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
     """Check if the user is an admin in a specific chat."""
     try:
-        # For private chats, always consider the user an admin if they're in ADMIN_USERS
-        if chat_id == user_id:
-            return user_id in ADMIN_USERS
-            
-        # For groups, check if user is an admin in that group
-        chat_member = await context.bot.get_chat_member(chat_id, user_id)
         return user_id in ADMIN_USERS
+
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
@@ -767,13 +762,16 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     chat_id = update.effective_chat.id
     
     # Always verify admin permissions first
-    is_user_admin = await is_admin(context, chat_id, user_id)
-    if not is_user_admin:
-        await query.answer("Sorry, only admins can use these controls.", show_alert=True)
-        return
-        
-    await query.answer()
     data = query.data
+
+    # Only restrict certain actions to admins
+    if data.startswith(("delete:", "clear:", "confirm_clear:")):
+        is_user_admin = await is_admin(context, chat_id, user_id)
+        if not is_user_admin:
+            await query.answer("Sorry, only admins can use these controls.", show_alert=True)
+            return
+
+    await query.answer()
     
     # Handle category selection
     if data.startswith("cat:"):
@@ -903,14 +901,17 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
+    return f"""You are *WB Networks* an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
     - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
     - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
     - **MUST** read the whole question so every word of the question makes sense in the output.
-    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
-    - **MUST** reply out-of-context questions with a befitting one-liner, make it look punchy.
+    - **NEVER** tell in output that is in similar as:
+                - **you are an AI** instead say siminlar that you're **assisting wolfblood**
+                - **context / provided context / knowledge base anything siminar**
+                - **groq / your model / any personal details**
+    - **MUST** reply out-of-context questions with a befitting **ONE LINE OUTPUT ONLY**, make it **look punchy**.
 
     Question: {question}
 
