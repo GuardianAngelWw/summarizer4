@@ -192,7 +192,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Use the correct model name format
+GROQ_MODEL = os.getenv("GROQ_MODEL", "deepseek-r1-distill-llama-70b")  # Use the correct model name format
 
 # Flask app initialization
 app = Flask(__name__)
