@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAG30nfyYZpQdCku1rV8IrSjnmjQaazbWIs"
+BOT_TOKEN = "6642970632:AAHHhfIz-dj8FUKgxOhRDVkKSW26kRNKACg"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -241,8 +241,13 @@ if not os.path.exists(CATEGORIES_FILE):
 async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
     """Check if the user is an admin in a specific chat."""
     try:
-        return user_id in ADMIN_USERS
-
+        # For private chats, always consider the user an admin if they're in ADMIN_USERS
+        if chat_id == user_id:
+            return user_id in ADMIN_USERS
+            
+        # For groups, check if user is an admin in that group
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        return user_id in ADMIN_USERS or chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.CREATOR]
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
@@ -765,7 +770,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     data = query.data
 
     # Only restrict certain actions to admins
-    if data.startswith(("delete:", "clear:", "confirm_clear:")):
+    if data.startswith(("delete:", "clear:", "confirm_clear:", "cat:")):
         is_user_admin = await is_admin(context, chat_id, user_id)
         if not is_user_admin:
             await query.answer("Sorry, only admins can use these controls.", show_alert=True)
@@ -898,6 +903,26 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         ]
         
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    # Handle confirm clear action
+    elif data.startswith("confirm_clear:"):
+        category_filter = data.split(":")[1]
+        category = None if category_filter == 'all' else category_filter
+        
+        # Determine group ID for group-specific entries
+        group_id = None
+        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
+            group_id = update.effective_chat.id
+            
+        count = clear_all_entries(group_id, category)
+        if count > 0:
+            await query.edit_message_text(f"✅ Successfully cleared {count} entries.")
+        else:
+            await query.edit_message_text("❌ No entries were cleared or an error occurred.")
+            
+    # Handle cancel clear action
+    elif data == "cancel_clear":
+        await query.edit_message_text("Operation cancelled.")
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
