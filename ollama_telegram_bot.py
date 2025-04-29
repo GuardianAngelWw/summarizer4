@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6642970632:AAHHhfIz-dj8FUKgxOhRDVkKSW26kRNKACg"
+BOT_TOKEN = "6187442999:AAGkTycBoJ4HXbh-nLV2n2cT5iUYvEuUxXg"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -247,7 +247,7 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
             
         # For groups, check if user is an admin in that group
         chat_member = await context.bot.get_chat_member(chat_id, user_id)
-        return user_id in ADMIN_USERS or chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.CREATOR]
+        return user_id in ADMIN_USERS or chat_member.status in ["administrator", "creator"]
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
