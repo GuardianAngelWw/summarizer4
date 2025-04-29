@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAEwYQthMDaxMNa24SEkx1Q47K-LQoGrWfU"
+BOT_TOKEN = "6642970632:AAEgR22GVtLyZ17bo3c-4KcAnAF6JUSrM80"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -191,8 +191,8 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration for Groq API
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Use the correct model name format
+TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "b418393e1d7f7ceca2555bcc9f3bb8e82fb27d335a132fc7af4fa3b021f5203d")
+TOGETHER_MODEL = os.getenv("TOGETHER_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free")
 
 # Flask app initialization
 app = Flask(__name__)
@@ -446,16 +446,16 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
 # Updated load_llm function to use Groq API
 async def load_llm():
     try:
-        logger.info(f"Using Groq API with model: {GROQ_MODEL}")
+        logger.info(f"Using Together.ai API with model: {TOGETHER_MODEL}")
         
-        if not GROQ_API_KEY:
-            logger.error("GROQ_API_KEY is not set. Please set it in .env file or environment variables.")
-            raise ValueError("GROQ_API_KEY is required")
+        if not TOGETHER_API_KEY:
+            logger.error("TOGETHER_API_KEY is not set. Please set it in .env file or environment variables.")
+            raise ValueError("TOGETHER_API_KEY is required")
         
-        # Initialize client and return it directly (no need to keep tokenizer and model separately)
-        return {"groq_client": True}
+        # Return a basic structure to confirm Together.ai setup
+        return {"together_client": True}
     except Exception as e:
-        logger.error(f"Error initializing Groq client: {str(e)}")
+        logger.error(f"Error initializing Together.ai client: {str(e)}")
         raise
 
 # Command Handlers
@@ -959,36 +959,31 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
 
 async def generate_response(prompt: str, _, __=None) -> str:
     try:
-        logger.info("Sending request to Groq API...")
+        logger.info("Sending request to Together.ai API...")
         
-        # Import here to ensure dependencies are available
-        from groq import AsyncGroq
+        # Make API call to Together.ai
+        together_api_url = "https://api.together.ai/v1/completions"
+        headers = {
+            "Authorization": f"Bearer {TOGETHER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": TOGETHER_MODEL,
+            "prompt": prompt,
+            "temperature": 0.7,
+            "max_tokens": 200,
+            "top_p": 0.95
+        }
         
-        # Initialize the Groq client
-        client = AsyncGroq(api_key=GROQ_API_KEY)
+        response = requests.post(together_api_url, headers=headers, json=payload)
+        response.raise_for_status()  # Raise exception for HTTP errors
         
-        # Make sure we're using a valid model name
-        # Some common Groq models: llama3-70b-8192, llama3-8b-8192, mixtral-8x7b-32768
-        # The model should be without hyphens in "versatile" if that was the issue
-        valid_model = GROQ_MODEL
-        if valid_model == "llama-3.3-70b-versatile":
-            valid_model = "llama3-70b-8192"
+        # Parse response
+        result = response.json()
+        answer = result.get("choices", [{}])[0].get("text", "").strip()
         
-        # Send request to Groq API
-        logger.info(f"Using model: {valid_model}")
-        chat_completion = await client.chat.completions.create(
-            model=valid_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=200,  # Increased for more detailed responses
-            top_p=0.95,      # Slightly increased for better creativity
-        )
-        
-        # Extract the response
-        response = chat_completion.choices[0].message.content
-        
-        logger.info("Received response from Groq API")
-        return response.strip()
+        logger.info("Received response from Together.ai API")
+        return answer
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
