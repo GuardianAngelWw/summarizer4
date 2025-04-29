@@ -182,8 +182,8 @@ if not logging.getLogger().handlers:
     )
 
 # Update the env variables (around line 37)
-ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "6691432218, 5980915474").strip()
-ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",")] if ADMIN_USER_IDS else []
+ADMIN_USER_IDS = "6691432218, 5980915474"
+ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",") if uid.strip()]
 CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
 ENTRIES_FILE = "entries.csv"
@@ -241,9 +241,7 @@ if not os.path.exists(CATEGORIES_FILE):
 async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
     """Check if the user is an admin in a specific chat."""
     try:
-        # For private chats, always consider the user an admin if they're in ADMIN_USERS
-        if chat_id == user_id:
-            return user_id in ADMIN_USERS
+        return user_id in ADMIN_USERS
 
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
