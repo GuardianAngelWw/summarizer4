@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 import nest_asyncio
 import threading
 import asyncio
+import time
 from apscheduler.schedulers.background import BackgroundScheduler
 # Apply nest_asyncio to patch the event loop
 nest_asyncio.apply()
@@ -263,6 +264,8 @@ async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: i
         )
         await app.shutdown()
         logger.info("Successfully sent daily CSV backup to logs channel.")
+    except Exception as e:
+        logger.error(f"Error sending CSV to logs channel: {str(e)}")
 
 def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
     """Schedule sending the CSV file to the logs channel once every day."""
