@@ -762,13 +762,16 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     chat_id = update.effective_chat.id
     
     # Always verify admin permissions first
-    is_user_admin = await is_admin(context, chat_id, user_id)
-    if not is_user_admin:
-        await query.answer("Sorry, only admins can use these controls.", show_alert=True)
-        return
-        
-    await query.answer()
     data = query.data
+
+    # Only restrict certain actions to admins
+    if data.startswith(("delete:", "clear:", "confirm_clear:")):
+        is_user_admin = await is_admin(context, chat_id, user_id)
+        if not is_user_admin:
+            await query.answer("Sorry, only admins can use these controls.", show_alert=True)
+            return
+
+    await query.answer()
     
     # Handle category selection
     if data.startswith("cat:"):
