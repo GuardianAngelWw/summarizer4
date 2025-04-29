@@ -199,7 +199,7 @@ app = Flask(__name__)
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-logger.info(f"Using Groq API with model: {GROQ_MODEL}")
+logger.info(f"Using TOGETHER API")
 logger.info("Bot initialization successful")  # Instead of logging the token
 
 # Flask routes for health monitoring
@@ -222,7 +222,7 @@ def root():
     }), 200
 
 # Log the model loading
-logger.info(f"Bot started with Groq API model: {GROQ_MODEL}")
+logger.info(f"Bot started with TOGETHER API")
 
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
