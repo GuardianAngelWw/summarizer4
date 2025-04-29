@@ -907,9 +907,10 @@ def build_prompt(question: str, context_text: str) -> str:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
     - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
-    - If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram vlockquote markdown.
-    - For questions outside the context of the knowledge base, provide a funny, befitting reply in just one line, everything in markdown telegram blockquote format.
-    - *NEVER* mention about the knowledge base in the output or anything if you can find, just go straight to the point of answering to the question.
+    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
+    - **MUST** read the whole question so every word of the question makes sense in the output.
+    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
+    - **MUST** reply out-of-context questions with a befitting one-liner, make it look punchy.
 
     Question: {question}
 
