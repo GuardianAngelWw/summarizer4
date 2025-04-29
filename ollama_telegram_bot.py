@@ -157,7 +157,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAGFopELRMNDzTda5jWy_qsHoPeyuIRMC6A"
+BOT_TOKEN = "6614402193:AAG30nfyYZpQdCku1rV8IrSjnmjQaazbWIs"
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -187,7 +187,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-70b-8192")  # Use the correct model name format
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Use the correct model name format
 
 # Flask app initialization
 app = Flask(__name__)
@@ -517,9 +517,11 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         # Send response to the replied user
         await thinking_message.delete()
+        # Inside the here_command function:
         await replied_msg.reply_text(
-            f"{replied_user.mention_html()}, here's the answer to: {question}\n\n{final_answer}",
-            parse_mode=ParseMode.HTML
+            f"{replied_user.mention_html()} 👇 {final_answer}",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True  # Disable Telegram link previews and web previews
         )
         
         # Delete the original command message
@@ -862,10 +864,18 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the following question in no more than 50 words:\n\n
-    while answering must start with "WB SERVICE 🚓🚨🚔🚨🚓:" and then answer followed also don't forget to put the answer concise, understandable, easy and also must put telegram markdown for source links to a word(most relevant) in the answer with [relevant word](source link). Try to send the messages in the same tone as the question asked to be funny, 
-    When asked a question from out of the context try to give a funny befitting reply in just 1 line.
-    Knowledge Base:\n{context_text}"""
+    return f"""You are an AI assistant with relatively high EGO. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
+    - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
+    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
+    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
+    - If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram vlockquote markdown.
+    - For questions outside the context of the knowledge base, provide a funny, befitting reply in just one line, everything in markdown telegram blockquote format.
+    - *NEVER* mention about the knowledge base in the output or anything if you can find, just go straight to the point of answering to the question.
+
+    Question: {question}
+
+    Knowledge Base:
+    {context_text}"""
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
@@ -921,6 +931,9 @@ async def generate_response(prompt: str, _, __=None) -> str:
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handle the /ask command to respond to user questions.
+    """
     question = " ".join(context.args)
     if not question:
         await update.message.reply_text(
@@ -930,7 +943,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     # Send initial thinking message
-    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
+    thinking_message = await update.message.reply_text("💣")
 
     # Load knowledge base
     group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
@@ -944,12 +957,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context_entries = "\n\n".join(
         f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
     )
-    prompt = f"""You are an AI assistant. Answer the question concisely based on the provided knowledge base. Include hyperlinks where appropriate.
-
-    Question: {question}
-
-    Knowledge Base:
-    {context_entries}"""
+    prompt = build_prompt(question, context_entries)
 
     # Generate response
     try:
@@ -961,16 +969,20 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         final_answer = add_hyperlinks(answer, keywords)
 
         # Format the final answer in Markdown
-        output = f"**Question:** {question}\n\n{final_answer}"
+        output = f"{final_answer}"
 
         # Send final response
         await thinking_message.delete()
-        await update.message.reply_markdown(output)
+        # Inside the ask_question function:
+        await update.message.reply_html(
+            output,
+            disable_web_page_preview=True  # Disable Telegram link previews and web previews
+        )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
         await update.message.reply_text("An error occurred while processing your question.")
-
+                                        
 @admin_only
 async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Command to clear all entries or by category."""
