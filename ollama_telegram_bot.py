@@ -13,6 +13,10 @@ from datetime import datetime
 import pytz
 from dotenv import load_dotenv
 import nest_asyncio
+import threading
+import asyncio
+import time
+from apscheduler.schedulers.background import BackgroundScheduler
 # Apply nest_asyncio to patch the event loop
 nest_asyncio.apply()
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember, Chat
@@ -158,6 +162,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = "6614402193:AAG30nfyYZpQdCku1rV8IrSjnmjQaazbWIs"
+bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -242,10 +247,44 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
             
         # For groups, check if user is an admin in that group
         chat_member = await context.bot.get_chat_member(chat_id, user_id)
-        return user_id in ADMIN_USERS or chat_member.status in [ChatMember.ADMINISTRATOR, ChatMember.CREATOR]
+        return user_id in ADMIN_USERS
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
+
+async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
+    """Send the CSV file to the specified Telegram channel."""
+    try:
+        app = Application.builder().token(bot_token).build()
+        await app.bot.send_document(
+            chat_id=channel_id,
+            document=open(file_path, "rb"),
+            filename=os.path.basename(file_path),
+            caption="📦 Daily backup: Current entries.csv file."
+        )
+        await app.shutdown()
+        logger.info("Successfully sent daily CSV backup to logs channel.")
+    except Exception as e:
+        logger.error(f"Error sending CSV to logs channel: {str(e)}")
+
+def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
+    """Schedule sending the CSV file to the logs channel once every day."""
+    scheduler = BackgroundScheduler(timezone="UTC")
+
+    async def send_backup():
+        await send_csv_to_logs_channel(bot_token, file_path, channel_id)
+
+    def job():
+        try:
+            asyncio.run(send_backup())
+        except Exception as e:
+            logger.error(f"Error in scheduled CSV backup: {e}")
+
+    # Schedule for once every day at 00:10 UTC (can adjust the time as needed)
+    scheduler.add_job(job, "cron", hour=0, minute=10, id="daily_csv_backup", replace_existing=True)
+    scheduler.start()
+    logger.info("Scheduled daily CSV backup to logs channel.")
+
         
 def admin_only(func):
     """Decorator to restrict command access to admin users only"""
@@ -868,9 +907,10 @@ def build_prompt(question: str, context_text: str) -> str:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
     - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
-    - If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram vlockquote markdown.
-    - For questions outside the context of the knowledge base, provide a funny, befitting reply in just one line, everything in markdown telegram blockquote format.
-    - *NEVER* mention about the knowledge base in the output or anything if you can find, just go straight to the point of answering to the question.
+    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
+    - **MUST** read the whole question so every word of the question makes sense in the output.
+    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
+    - **MUST** reply out-of-context questions with a befitting one-liner, make it look punchy.
 
     Question: {question}
 
@@ -1300,6 +1340,12 @@ async def main():
     
     # Initialize status monitor
     status_monitor = BotStatusMonitor(bot_token, admin_ids)
+    # Schedule the daily backup of the entries CSV to the logs channel
+    schedule_daily_csv_backup(
+        bot_token=bot_token,
+        file_path=ENTRIES_FILE,
+        channel_id=-1001925908750
+    )
     
     # Send startup notification
     await status_monitor.send_startup_notification()
