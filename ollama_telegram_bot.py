@@ -13,6 +13,9 @@ from datetime import datetime
 import pytz
 from dotenv import load_dotenv
 import nest_asyncio
+import threading
+import asyncio
+from apscheduler.schedulers.background import BackgroundScheduler
 # Apply nest_asyncio to patch the event loop
 nest_asyncio.apply()
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember, Chat
