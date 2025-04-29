@@ -933,7 +933,7 @@ def build_prompt(question: str, context_text: str) -> str:
     - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
     - **MUST** read the whole question so every word of the question makes sense in the output.
     - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
-    - **MUST** reply out-of-context questions with a befitting one-liner, make it look punchy.
+    - **NEVER** reply out-of-context or out of entries questions.
 
     Question: {question}
 
