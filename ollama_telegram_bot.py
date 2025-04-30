@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6642970632:AAEMOR8TzUF8bHv0pGlmWeRw-OkvPaXTmZw"
+BOT_TOKEN = "6614402193:AAGpKtzefMx23B9zk7LLt1JdLVuf9rJM-Pw"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -192,7 +192,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = "compound-beta"  # Using Groq compatible model
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
