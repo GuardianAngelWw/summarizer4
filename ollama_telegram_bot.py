@@ -472,17 +472,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/here &lt;your question &gt; - Ask a question (when replying to someone)\n"
     )
     
-    if is_user_admin:
-        admin_text = (
-            "/list - List knowledge entries (admin only)\n"
-            "/add \"entry text\" \"message_link\" \"category\" - Add a new entry\n"
-            "/download - Download the current CSV file\n"
-            "/upload - Upload a CSV file\n"
-            "/clear - Clear all entries or entries in a specific category\n"
-        )
-        help_text += admin_text
+#    if is_user_admin:
+#       admin_text = (
+#            "/list - List knowledge entries (admin only)\n"
+#            "/add \"entry text\" \"message_link\" \"category\" - Add a new entry\n"
+#            "/download - Download the current CSV file\n"
+#            "/upload - Upload a CSV file\n"
+#            "/clear - Clear all entries or entries in a specific category\n"
+#        )
+#        help_text += admin_text
     
-    help_text += "\nUse categories to organize your knowledge entries."
+ #   help_text += "\nUse categories to organize your knowledge entries."
     await update.message.reply_html(help_text)
     
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
