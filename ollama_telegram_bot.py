@@ -161,7 +161,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6642970632:AAEgR22GVtLyZ17bo3c-4KcAnAF6JUSrM80"
+BOT_TOKEN = "6642970632:AAEMOR8TzUF8bHv0pGlmWeRw-OkvPaXTmZw"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -191,15 +191,15 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
 
 # Update the model configuration for Groq API
-TOGETHER_API_KEY = os.getenv("TOGETHER_API_KEY", "b418393e1d7f7ceca2555bcc9f3bb8e82fb27d335a132fc7af4fa3b021f5203d")
-TOGETHER_MODEL = os.getenv("TOGETHER_MODEL", "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free")
+TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
+GROQ_MODEL = "llama3-8b-8192"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-logger.info(f"Using TOGETHER API")
+logger.info(f"Using Groq API with model {GROQ_MODEL}")
 logger.info("Bot initialization successful")  # Instead of logging the token
 
 # Flask routes for health monitoring
@@ -446,16 +446,16 @@ def search_entries(query: str, group_id: Optional[int] = None, category: Optiona
 # Updated load_llm function to use Groq API
 async def load_llm():
     try:
-        logger.info(f"Using Together.ai API with model: {TOGETHER_MODEL}")
+        logger.info(f"Using Groq API with model: {GROQ_MODEL}")
         
-        if not TOGETHER_API_KEY:
-            logger.error("TOGETHER_API_KEY is not set. Please set it in .env file or environment variables.")
-            raise ValueError("TOGETHER_API_KEY is required")
+        if not TOGETHER_API_KEY:  # Still using the TOGETHER_API_KEY variable name for now
+            logger.error("GROQ_API_KEY is not set. Please set it in .env file or environment variables.")
+            raise ValueError("GROQ_API_KEY is required")
         
-        # Return a basic structure to confirm Together.ai setup
-        return {"together_client": True}
+        # Return a basic structure to confirm Groq setup
+        return {"groq_client": True}
     except Exception as e:
-        logger.error(f"Error initializing Together.ai client: {str(e)}")
+        logger.error(f"Error initializing Groq client: {str(e)}")
         raise
 
 # Command Handlers
@@ -556,12 +556,23 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         # Send response to the replied user
         await thinking_message.delete()
+        # Check if response is too long
+        if len(final_answer) > 4000:  # Telegram has ~4096 char limit
+            final_answer = final_answer[:3900] + "\n\n... (message truncated due to length)"
         # Inside the here_command function:
-        await replied_msg.reply_text(
-            f"{replied_user.mention_html()} 👇 {final_answer}",
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True  # Disable Telegram link previews and web previews
-        )
+        try:
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()} 👇 {final_answer}",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True  # Disable Telegram link previews and web previews
+            )
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            # Send a simplified fallback message
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()}, I found an answer to your question, but had trouble formatting it.",
+                parse_mode=ParseMode.HTML
+            )
         
         # Delete the original command message
         try:
@@ -816,10 +827,32 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             message += f" in category '{category}'"
         message += ":\n\n"
         
-        # Add entries to message
+        # Add entries to message with length limit check
+        message_len = len(message)
+        max_len = 3800  # Leave room for markup and footer
+        
         for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
-            message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
-            message += f"   🔗 {entry['link']}\n\n"
+            entry_text = entry.get('text', '').strip()
+            category_text = entry.get('category', 'General')
+            link_text = entry.get('link', '').strip()
+            
+            # Truncate entry text if it's too long
+            if len(entry_text) > 100:
+                entry_text = entry_text[:97] + "..."
+                
+            # Truncate link if it's too long
+            if len(link_text) > 60:
+                link_text = link_text[:57] + "..."
+                
+            entry_message = f"{i}. [{category_text}] {entry_text}\n   🔗 {link_text}\n\n"
+            
+            # Check if adding this entry would exceed message length
+            if message_len + len(entry_message) > max_len:
+                message += "\n(Some entries truncated due to message length limit)"
+                break
+                
+            message += entry_message
+            message_len += len(entry_message)
         
         # Create navigation buttons
         keyboard = []
@@ -866,8 +899,17 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
         
-        # Update message
-        await query.edit_message_text(message, reply_markup=reply_markup)
+        # Update message with error handling
+        try:
+            await query.edit_message_text(message, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Error updating message: {str(e)}")
+            # If message is too long, try with a simpler message
+            try:
+                simple_message = f"📚 Showing entries for {category or 'all categories'}\n(Message simplified due to length issues)"
+                await query.edit_message_text(simple_message, reply_markup=reply_markup)
+            except Exception as e2:
+                logger.error(f"Failed to send simplified message: {str(e2)}")
         return
 
     # Rest of the function remains the same...
@@ -959,31 +1001,28 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
 
 async def generate_response(prompt: str, _, __=None) -> str:
     try:
-        logger.info("Sending request to Together.ai API...")
+        logger.info("Sending request to Groq API...")
         
-        # Make API call to Together.ai
-        together_api_url = "https://api.together.ai/v1/completions"
-        headers = {
-            "Authorization": f"Bearer {TOGETHER_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": TOGETHER_MODEL,
-            "prompt": prompt,
-            "temperature": 0.7,
-            "max_tokens": 200,
-            "top_p": 0.95
-        }
+        # Import groq only when needed
+        import groq
         
-        response = requests.post(together_api_url, headers=headers, json=payload)
-        response.raise_for_status()  # Raise exception for HTTP errors
+        # Initialize Groq client
+        client = groq.AsyncGroq(api_key=TOGETHER_API_KEY)  # Using the existing variable name but it now contains Groq API key
         
-        # Parse response
-        result = response.json()
-        answer = result.get("choices", [{}])[0].get("text", "").strip()
+        # Use chat completions with proper formatting
+        chat_completion = await client.chat.completions.create(
+            model=GROQ_MODEL,  # Use the configured Groq model
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=800,  # Increased token count but still within safe limits
+            top_p=0.95
+        )
         
-        logger.info("Received response from Together.ai API")
-        return answer
+        # Extract the response
+        answer = chat_completion.choices[0].message.content
+        
+        logger.info("Received response from Groq API")
+        return answer.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
@@ -1031,11 +1070,21 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # Send final response
         await thinking_message.delete()
+        # Check message length to avoid Telegram error
+        if len(output) > 4000:  # Telegram has ~4096 char limit
+            output = output[:3900] + "\n\n... (message truncated due to length)"
         # Inside the ask_question function:
-        await update.message.reply_html(
-            output,
-            disable_web_page_preview=True  # Disable Telegram link previews and web previews
-        )
+        try:
+            await update.message.reply_html(
+                output,
+                disable_web_page_preview=True  # Disable Telegram link previews and web previews
+            )
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            # Send a simplified fallback message
+            await update.message.reply_text(
+                "I found an answer to your question, but had trouble formatting it. Please try asking in a different way."
+            )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
