@@ -192,7 +192,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = "llama3-8b-8192"  # Using Groq compatible model
+GROQ_MODEL = "compound-beta"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
