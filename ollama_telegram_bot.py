@@ -192,7 +192,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = "llama-guard-3-8b"  # Using Groq compatible model
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
@@ -260,7 +260,7 @@ async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: i
             chat_id=channel_id,
             document=open(file_path, "rb"),
             filename=os.path.basename(file_path),
-            caption="📦 Daily backup: Current entries.csv file."
+            caption="📦 Daily #backup: Current entries.csv file."
         )
         await app.shutdown()
         logger.info("Successfully sent daily CSV backup to logs channel.")
