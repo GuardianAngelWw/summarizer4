@@ -192,7 +192,7 @@ CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and gro
 
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
+GROQ_MODEL = "llama-guard-3-8b"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
@@ -984,17 +984,28 @@ def build_prompt(question: str, context_text: str) -> str:
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
-    Replace keywords with Telegram markdown links in the answer.
+    Replace keywords with Telegram HTML links in the answer.
 
     :param answer: The generated answer text.
     :param keywords: A dictionary of keywords and their corresponding URLs.
     :return: Updated answer with hyperlinks.
     """
+    def escape_html(text):
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+        )
+
     for word, url in keywords.items():
-        # Replace only the full word or part of word with the hyperlink
+        # Escape HTML in the word and URL
+        safe_word = escape_html(word)
+        safe_url = escape_html(url)
+        # Replace only the full word with the hyperlink (HTML)
         answer = re.sub(
-            rf"(?<!\w)({re.escape(word)})(?!\w)",  # Match word boundaries to replace only intended parts
-            f"[\\1]({url})",  # Telegram markdown format
+            rf"(?<!\w)({re.escape(word)})(?!\w)",
+            f'<a href="{safe_url}">{safe_word}</a>',
             answer
         )
     return answer
