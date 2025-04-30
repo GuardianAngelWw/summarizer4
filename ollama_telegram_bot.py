@@ -182,7 +182,7 @@ if not logging.getLogger().handlers:
     )
 
 # Update the env variables (around line 37)
-ADMIN_USER_IDS = "5980915474"
+ADMIN_USER_IDS = "5980915474, 2102500190, 6224005135, 5220713961, 1217170295"
 ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",") if uid.strip()]
 CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
