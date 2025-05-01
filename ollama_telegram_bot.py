@@ -165,7 +165,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAGpKtzefMx23B9zk7LLt1JdLVuf9rJM-Pw"
+BOT_TOKEN = "6614402193:AAEnsdd9byWO2m8u2HoYtS5UmTOlXIX5DQM"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -196,7 +196,7 @@ CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = "llama3-70b-8192"  # Using Groq compatible model
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
@@ -572,7 +572,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
             await replied_msg.reply_text(
-                f"{replied_user.mention_html()}, I found an answer to your question, but had trouble formatting it.",
+                f"{replied_user.mention_html()}, fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!",
                 parse_mode=ParseMode.HTML
             )
         try:
@@ -1015,7 +1015,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
             await update.message.reply_text(
-                "I found an answer to your question, but had trouble formatting it. Please try asking in a different way."
+                "fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!"
             )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
