@@ -258,6 +258,21 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
         logger.error(f"Error checking admin status: {str(e)}")
         return False
 
+def admin_only(func):
+    """Decorator to restrict command access to admin users only"""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Check if user is an admin
+        if not await is_admin(context, chat_id, user_id):
+            await update.message.reply_text("Sorry, this command is restricted to admins only.")
+            return
+            
+        return await func(update, context, *args, **kwargs)
+    return wrapped
+
 @admin_only  # Remove this decorator if you want all users to use /s
 async def show_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the full details of a specific entry by index, with a delete button."""
@@ -363,22 +378,6 @@ def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
     scheduler.add_job(job, "cron", hour=0, minute=10, id="daily_csv_backup", replace_existing=True)
     scheduler.start()
     logger.info("Scheduled daily CSV backup to logs channel.")
-
-        
-def admin_only(func):
-    """Decorator to restrict command access to admin users only"""
-    @wraps(func)
-    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
-        
-        # Check if user is an admin
-        if not await is_admin(context, chat_id, user_id):
-            await update.message.reply_text("Sorry, this command is restricted to admins only.")
-            return
-            
-        return await func(update, context, *args, **kwargs)
-    return wrapped
 
 def get_categories() -> List[str]:
     """Get the list of categories."""
