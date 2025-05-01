@@ -188,7 +188,7 @@ CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
 ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
-CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
+CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
@@ -227,7 +227,7 @@ logger.info(f"Bot started with TOGETHER API")
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
 
-# Create entries.csv and categories.json if they don't exist
+# Update the initialization of the CSV file (remove group_id)
 if not os.path.exists(ENTRIES_FILE):
     with open(ENTRIES_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -329,32 +329,27 @@ def add_category(category: str) -> bool:
         logger.error(f"Error writing categories: {str(e)}")
         return False
 
-def read_entries(group_id: Optional[int] = None, category: Optional[str] = None) -> List[Dict[str, str]]:
-    """Read entries from the CSV file with optional filtering by group_id and category."""
+def read_entries(category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Read entries from the CSV file with optional filtering by category only."""
     entries = []
     try:
         with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # Fill in missing fields with defaults for backward compatibility
+                # Fill in missing fields
                 if "category" not in row:
                     row["category"] = "General"
-                if "group_id" not in row:
-                    row["group_id"] = ""
-                
-                # Apply filters if specified
-                if group_id is not None and row["group_id"] and int(row["group_id"]) != group_id:
-                    continue
+                # Remove group_id if present from previous versions
+                row.pop("group_id", None)
                 if category is not None and row["category"] != category:
                     continue
-                    
                 entries.append(row)
     except Exception as e:
         logger.error(f"Error reading entries: {str(e)}")
     return entries
 
 def write_entries(entries: List[Dict[str, str]]) -> bool:
-    """Write entries to the CSV file."""
+    """Write entries to the CSV file (category only, no group_id)."""
     try:
         with open(ENTRIES_FILE, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
@@ -365,26 +360,18 @@ def write_entries(entries: List[Dict[str, str]]) -> bool:
         logger.error(f"Error writing entries: {str(e)}")
         return False
 
-def add_entry(text: str, link: str, category: str = "General", group_id: Optional[int] = None) -> bool:
-    """Add a new entry to the CSV file."""
+def add_entry(text: str, link: str, category: str = "General") -> bool:
+    """Add a new entry (no group-specific logic)."""
     entries = read_entries()
-    
-    # Check if entry already exists
     for entry in entries:
         if entry["text"] == text and entry["link"] == link:
-            if (group_id is None or entry["group_id"] == str(group_id)):
-                return False
-    
-    # Make sure category exists or create it
+            return False
     add_category(category)
-    
     new_entry = {
-        "text": text, 
-        "link": link, 
-        "category": category,
-        "group_id": str(group_id) if group_id else ""
+        "text": text,
+        "link": link,
+        "category": category
     }
-    
     entries.append(new_entry)
     return write_entries(entries)
 
@@ -396,48 +383,29 @@ def delete_entry(index: int) -> bool:
         return write_entries(entries)
     return False
 
-def clear_all_entries(group_id: Optional[int] = None, category: Optional[str] = None) -> int:
-    """Clear all entries, optionally filtered by group_id and/or category.
-    Returns the number of entries deleted."""
+def clear_all_entries(category: Optional[str] = None) -> int:
+    """Clear all entries, optionally filtered by category only."""
     all_entries = read_entries()
-    
-    if group_id is None and category is None:
-        # Clear all entries
+    if category is None:
         count = len(all_entries)
         return count if write_entries([]) else 0
-    
-    # Filter entries to keep
     entries_to_keep = []
     count = 0
-    
     for entry in all_entries:
-        should_delete = True
-        
-        if group_id is not None and entry["group_id"] and int(entry["group_id"]) != group_id:
-            should_delete = False
-        if category is not None and entry["category"] != category:
-            should_delete = False
-            
-        if should_delete:
-            count += 1
-        else:
+        if entry["category"] != category:
             entries_to_keep.append(entry)
-    
+        else:
+            count += 1
     if count > 0:
         success = write_entries(entries_to_keep)
         return count if success else 0
     return 0
 
-def search_entries(query: str, group_id: Optional[int] = None, category: Optional[str] = None) -> List[Dict[str, str]]:
-    """Search for entries matching the query, with optional group_id and category filtering."""
-    # Get entries with the specified group_id and category filters
-    entries = read_entries(group_id=group_id, category=category)
-    
-    # If no query provided, just return filtered entries
+def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Search for entries matching the query, with optional category filtering (no group)."""
+    entries = read_entries(category=category)
     if not query:
         return entries
-    
-    # Search in both text and category fields
     query = query.lower()
     return [entry for entry in entries if 
             query in entry["text"].lower() or 
@@ -516,7 +484,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         group_id = update.effective_chat.id
     
     # Get entries for context - specific to this group if in a group chat
-    entries = read_entries(group_id=group_id)
+    entries = read_entries()
     
     if not entries:
         await thinking_message.delete()
@@ -634,68 +602,37 @@ def format_error_for_user(error: Exception) -> str:
 
 @admin_only
 async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Add a new entry with optional category and group specificity."""
-    # Check command format
-    text = update.message.text[5:].strip()  # Remove "/add "
-    
-    # Extract text, link, and optional category using regex to handle quoted arguments
-    # Handle quoted arguments pattern with proper escaping for nested quotes
+    text = update.message.text[5:].strip()
     match = re.match(r'"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
-    
     if not match:
         await update.message.reply_text(
             "Please use the format: /add \"entry text\" \"message_link\" \"optional_category\""
         )
         return
-    
-    # Extract the matched groups
     match_groups = match.groups()
     entry_text = match_groups[0]
     link = match_groups[1]
     category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
-    
-    # Get group ID if in a group
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Add the entry
-    if add_entry(entry_text, link, category, group_id):
+    if add_entry(entry_text, link, category):
         await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
     else:
         await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
 
 @admin_only
 async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List all entries with pagination, category filtering, and group specificity."""
     args = context.args if context.args else []
-    
-    # Parse arguments - format: ["query", "category=value"]
     query = ""
     category = None
-    
     for arg in args:
         if arg.startswith("category="):
             category = arg.split("=")[1] if len(arg.split("=")) > 1 else None
         else:
             query = arg
-    
     page = int(context.user_data.get('page', 0))
-    
-    # Determine group ID for group-specific entries
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Get entries, filtered by search query, category, and group if provided
-    entries = search_entries(query, group_id, category) if query else read_entries(group_id, category)
-    
-    # Calculate pagination
+    entries = search_entries(query, category) if query else read_entries(category)
     total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
     start_idx = page * ENTRIES_PER_PAGE
     end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
-    
-    # Generate message text
     if not entries:
         message = "No entries found."
         if category:
@@ -704,16 +641,12 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             message += f" matching '{query}'"
         await update.message.reply_text(message)
         return
-    
-    # Build header message
     message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
     if category:
         message += f" in category '{category}'"
     if query:
         message += f" matching '{query}'"
     message += ":\n\n"
-    
-    # Add entries to message
     for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
         message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
         message += f"   🔗 {entry['link']}\n\n"
@@ -789,32 +722,19 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await query.answer()
     
-    # Handle category selection
     if data.startswith("cat:"):
         category = data.split(":")[1]
-        context.user_data['page'] = 0  # Reset page when changing category
+        context.user_data['page'] = 0
         context.user_data['category'] = category
-        
-        # Re-trigger list with the selected category
         fake_update = Update(update.update_id, message=update.effective_message)
         await list_entries(fake_update, context)
         return
-        
-    # Handle page navigation
     if data.startswith("page:"):
         parts = data.split(":")
         page = int(parts[1])
         category = parts[2] if len(parts) > 2 and parts[2] else None
-        
         context.user_data['page'] = page
-        
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-        
-        # Get entries with filtering
-        entries = read_entries(group_id, category)
+        entries = read_entries(category)
         
         # Calculate pagination
         total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
@@ -912,57 +832,35 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 logger.error(f"Failed to send simplified message: {str(e2)}")
         return
 
-    # Rest of the function remains the same...
     elif data.startswith("delete:"):
         index = int(data.split(":")[1])
         if delete_entry(index):
             await query.edit_message_text(f"✅ Entry #{index+1} deleted successfully.")
         else:
             await query.edit_message_text(f"❌ Failed to delete entry #{index+1}.")
-            
-    # Handle clear all entries
     elif data.startswith("clear:"):
         category_filter = data.split(":")[1]
         category = None if category_filter == 'all' else category_filter
-        
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-        
-        # Confirm before clearing
         confirm_text = "Are you sure you want to clear "
         if category:
             confirm_text += f"all entries in category '{category}'?"
         else:
             confirm_text += "ALL entries?"
-            
         keyboard = [
             [
                 InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
                 InlineKeyboardButton("Cancel", callback_data="cancel_clear")
             ]
         ]
-        
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
-        
-    # Handle confirm clear action
     elif data.startswith("confirm_clear:"):
         category_filter = data.split(":")[1]
         category = None if category_filter == 'all' else category_filter
-        
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-            
-        count = clear_all_entries(group_id, category)
+        count = clear_all_entries(category)
         if count > 0:
             await query.edit_message_text(f"✅ Successfully cleared {count} entries.")
         else:
             await query.edit_message_text("❌ No entries were cleared or an error occurred.")
-            
-    # Handle cancel clear action
     elif data == "cancel_clear":
         await query.edit_message_text("Operation cancelled.")
 
@@ -1039,9 +937,6 @@ async def generate_response(prompt: str, _, __=None) -> str:
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Handle the /ask command to respond to user questions.
-    """
     question = " ".join(context.args)
     if not question:
         await update.message.reply_text(
@@ -1049,13 +944,8 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/ask Whose birthdays are in the month of April?"
         )
         return
-
-    # Send initial thinking message
     thinking_message = await update.message.reply_text("💣")
-
-    # Load knowledge base
-    group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
-    entries = read_entries(group_id=group_id)
+    entries = read_entries()
     if not entries:
         await thinking_message.delete()
         await update.message.reply_text("No knowledge entries found to answer your question.")
@@ -1103,70 +993,32 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                                         
 @admin_only
 async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Command to clear all entries or by category."""
-    # Parse arguments
     category = None
     if context.args:
         category = " ".join(context.args)
-    
-    # Determine group ID for group-specific entries
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Confirm before clearing
     confirm_text = "Are you sure you want to clear "
     if category:
         confirm_text += f"all entries in category '{category}'?"
     else:
         confirm_text += "ALL entries?"
-        
     keyboard = [
         [
             InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
             InlineKeyboardButton("Cancel", callback_data="cancel_clear")
         ]
     ]
-    
     await update.message.reply_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 @admin_only
 async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Download the entries CSV file."""
     if not os.path.exists(ENTRIES_FILE):
         await update.message.reply_text("No entries file exists yet.")
         return
-    
-    # Get entries for the current group if in a group chat
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-        entries = read_entries(group_id)
-        
-        # Create a temporary file with only the group's entries
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
-            try:
-                with open(temp_file.name, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-                    writer.writeheader()
-                    writer.writerows(entries)
-                
-                # Send the filtered CSV
-                await update.message.reply_document(
-                    document=open(temp_file.name, "rb"),
-                    filename=f"entries_{update.effective_chat.title or 'group'}.csv",
-                    caption=f"Here's your knowledge base CSV file for this group. ({len(entries)} entries)"
-                )
-            finally:
-                # Clean up temp file
-                os.unlink(temp_file.name)
-    else:
-        # For private chats, send the full CSV
-        await update.message.reply_document(
-            document=open(ENTRIES_FILE, "rb"),
-            filename="entries.csv",
-            caption=f"Here's your complete knowledge base CSV file."
-        )
+    await update.message.reply_document(
+        document=open(ENTRIES_FILE, "rb"),
+        filename="entries.csv",
+        caption="Here's your complete knowledge base CSV file."
+    )
 
 @admin_only
 async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1185,131 +1037,83 @@ async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @admin_only
 async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the uploaded CSV file."""
-    # Always try to process CSV files when they're uploaded in reply
     if update.message.reply_to_message and update.message.document:
-        # Set the state to true to ensure processing continues
         context.user_data["awaiting_csv"] = True
-    
     if not context.user_data.get("awaiting_csv"):
         return
-    
-    # Reset state
     context.user_data["awaiting_csv"] = False
-    
     if not update.message.document:
         await update.message.reply_text("Please upload a CSV file.")
         return
-    
     document = update.message.document
     file_name = document.file_name.lower() if document.file_name else "unnamed.file"
-    
-    # More permissive file checking - accept any file and try to process as CSV
     uploaded_entries = []
     processing_status = await update.message.reply_text("⏳ Processing your uploaded file...")
-    
     try:
-        # Download the file
         file = await context.bot.get_file(document.file_id)
-        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             await file.download_to_drive(temp_file.name)
             file_path = temp_file.name
-        
-        # Try multiple parsing approaches
         file_content = ""
         rows_parsed = []
-        
-        # First read the raw content to examine
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 file_content = f.read()
         except UnicodeDecodeError:
-            # Try different encodings if UTF-8 fails
             try:
                 with open(file_path, "r", encoding="latin-1") as f:
                     file_content = f.read()
             except Exception as e:
                 await processing_status.edit_text(f"Error reading file: {str(e)}")
                 return
-                
-        # Check if content looks like a CSV
         if not any(separator in file_content for separator in [",", "\t", ";"]):
             await processing_status.edit_text(
                 "The uploaded file doesn't appear to be in CSV format. Expected comma, tab, or semicolon delimiters."
             )
             return
-            
-        # Try different delimiters
         for delimiter in [",", "\t", ";"]:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     reader = csv.DictReader(f, delimiter=delimiter)
                     if not reader.fieldnames:
                         continue
-                        
-                    # Check for required headers
                     required_headers = ["text", "link"]
                     if all(header in reader.fieldnames for header in required_headers):
-                        # Found a working delimiter with required headers
-                        rows_parsed = list(reader)  # Convert to list to preserve after file close
+                        rows_parsed = list(reader)
                         await processing_status.edit_text(f"✅ Found CSV format with {delimiter} delimiter")
                         break
             except Exception as e:
                 logger.info(f"Parsing with delimiter {delimiter} failed: {str(e)}")
                 continue
-                
-        # If we didn't parse any rows with standard headers, try alternative approaches
         if not rows_parsed:
             await processing_status.edit_text(
                 "Could not find required 'text' and 'link' columns in the CSV. "
                 "Please check the file format and try again."
             )
             return
-            
-        # Get current group ID if in a group
-        current_group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            current_group_id = update.effective_chat.id
-            
         # Process the successfully parsed rows
         for i, row in enumerate(rows_parsed, 1):
             try:
-                # Check if we have text and link - the minimum required fields
                 text = row.get("text", "").strip()
                 link = row.get("link", "").strip()
-                
                 if not text or not link:
                     logger.warning(f"Skipping row {i}: Missing required text or link field")
                     continue
-                    
-                # Create entry with defaults for missing fields
                 new_entry = {
                     "text": text,
                     "link": link,
-                    "category": row.get("category", "General").strip() or "General",
-                    "group_id": row.get("group_id", "").strip()
+                    "category": row.get("category", "General").strip() or "General"
                 }
-                
-                # If in a group and no group_id specified, assign current group
-                if current_group_id and not new_entry["group_id"]:
-                    new_entry["group_id"] = str(current_group_id)
-                    
                 uploaded_entries.append(new_entry)
             except Exception as row_error:
                 logger.error(f"Error processing row {i}: {str(row_error)}")
-                # Continue processing other rows despite this error
-        # Clean up temp file at the end
         try:
             os.unlink(file_path)
         except Exception as e:
             logger.error(f"Error cleaning up temp file: {str(e)}")
-        
         if not uploaded_entries:
             await processing_status.edit_text("No valid entries found in the CSV file.")
             return
-        
-        # Confirm before overwriting
         await processing_status.delete()
         message = f"✅ Found {len(uploaded_entries)} valid entries in the CSV file. Do you want to:"
         keyboard = [
@@ -1319,89 +1123,49 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             ],
             [InlineKeyboardButton("Cancel", callback_data="csv:cancel")]
         ]
-        
-        # Store entries for later use
         context.user_data["uploaded_entries"] = uploaded_entries
-        
         await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
-        
     except Exception as e:
         logger.error(f"Error processing CSV upload: {str(e)}")
         try:
             await processing_status.delete()
         except:
-            pass  # Ignore if status message already deleted
+            pass
         await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
 
 async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle callback queries for CSV operations."""
     query = update.callback_query
     await query.answer()
-    
     action = query.data.split(":", 1)[1]
-    
     if action == "cancel":
         await query.edit_message_text("CSV import canceled.")
         return
-    
     uploaded_entries = context.user_data.get("uploaded_entries", [])
-    
     if not uploaded_entries:
         await query.edit_message_text("No entries to process.")
         return
-    
     try:
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-        
         if action == "replace":
-            # If in a group, only replace entries for this group
-            if group_id:
-                # Keep entries that don't belong to this group
-                other_entries = [entry for entry in read_entries() 
-                                if entry.get("group_id") and entry.get("group_id") != str(group_id)]
-                
-                # Add the new entries for this group
-                combined_entries = other_entries + uploaded_entries
-                success = write_entries(combined_entries)
-                message = f"✅ Successfully replaced {len(uploaded_entries)} entries for this group." if success else "❌ Failed to update entries."
-            else:
-                # In private chat, replace all entries
-                success = write_entries(uploaded_entries)
-                message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
-        
+            success = write_entries(uploaded_entries)
+            message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
         elif action == "append":
-            # Append to existing entries
             current_entries = read_entries()
-            
-            # Use a more comprehensive way to check for duplicates
             new_entries = []
             existing_count = 0
-            
             for entry in uploaded_entries:
-                # Check if this exact entry already exists
                 is_duplicate = False
                 for existing in current_entries:
                     if (existing["text"] == entry["text"] and 
-                        existing["link"] == entry["link"] and
-                        (not group_id or existing.get("group_id", "") == str(group_id))):
+                        existing["link"] == entry["link"]):
                         is_duplicate = True
                         existing_count += 1
                         break
-                
                 if not is_duplicate:
                     new_entries.append(entry)
-            
-            # Combine and save
             combined_entries = current_entries + new_entries
             success = write_entries(combined_entries)
-            
             message = f"✅ Added {len(new_entries)} new entries (skipped {existing_count} duplicates)." if success else "❌ Failed to update entries."
-        
         await query.edit_message_text(message)
-        
     except Exception as e:
         logger.error(f"Error handling CSV action: {str(e)}")
         await query.edit_message_text(f"Error: {str(e)}")
