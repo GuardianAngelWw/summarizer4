@@ -196,7 +196,7 @@ CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
+GROQ_MODEL = "llama3-70b-8192"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
