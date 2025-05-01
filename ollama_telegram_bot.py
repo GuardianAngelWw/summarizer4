@@ -34,7 +34,11 @@ import json
 from flask import Flask, jsonify
 import logging.handlers
 # Groq API client will be imported as needed
-
+# Add fuzzy matching for advanced search-then-summarize (preferred: rapidfuzz)
+try:
+    from rapidfuzz import fuzz
+except ImportError:
+    raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
 # No need for duplicate imports as they're already defined above
 
 # Add these constants at the top of your file
@@ -161,7 +165,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAEwYQthMDaxMNa24SEkx1Q47K-LQoGrWfU"
+BOT_TOKEN = "6614402193:AAEnsdd9byWO2m8u2HoYtS5UmTOlXIX5DQM"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -182,24 +186,24 @@ if not logging.getLogger().handlers:
     )
 
 # Update the env variables (around line 37)
-ADMIN_USER_IDS = "5980915474"
+ADMIN_USER_IDS = "5980915474, 2102500190, 6224005135, 5220713961, 1217170295"
 ADMIN_USERS = [int(uid.strip()) for uid in ADMIN_USER_IDS.split(",") if uid.strip()]
 CURRENT_DATE = "2025-04-27 09:19:30"  # Updated current UTC time
 CURRENT_USER = "GuardianAngelWw"      # Updated current user
 ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
-CSV_HEADERS = ["text", "link", "category", "group_id"]  # Added category and group_id fields
+CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
 # Update the model configuration for Groq API
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Use the correct model name format
+TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
+GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
 
 # Flask app initialization
 app = Flask(__name__)
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-logger.info(f"Using Groq API with model: {GROQ_MODEL}")
+logger.info(f"Using Groq API with model {GROQ_MODEL}")
 logger.info("Bot initialization successful")  # Instead of logging the token
 
 # Flask routes for health monitoring
@@ -222,12 +226,12 @@ def root():
     }), 200
 
 # Log the model loading
-logger.info(f"Bot started with Groq API model: {GROQ_MODEL}")
+logger.info(f"Bot started with TOGETHER API")
 
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
 
-# Create entries.csv and categories.json if they don't exist
+# Update the initialization of the CSV file (remove group_id)
 if not os.path.exists(ENTRIES_FILE):
     with open(ENTRIES_FILE, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -252,6 +256,33 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
         logger.error(f"Error checking admin status: {str(e)}")
         return False
 
+def clean_telegram_html(text: str) -> str:
+    """
+    Clean/sanitize string for Telegram HTML compatibility:
+    - Replace <br>, <br/>, </br> with newlines.
+    - Remove all other unsupported tags.
+    - Optionally, collapse multiple newlines.
+    """
+    # Replace <br> and variants with newline
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</br\s*>', '\n', text, flags=re.IGNORECASE)
+
+    # Allowed Telegram HTML tags
+    allowed = ['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','blockquote']
+    # Remove all other HTML tags except allowed
+    text = re.sub(
+        r'</?(?!' + '|'.join(allowed) + r')\b[^>]*>',
+        '',
+        text
+    )
+
+    # Collapse >2 newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text
+
+# ... [rest of your code remains the same, but update message sending as follows] ...
+
 async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
     """Send the CSV file to the specified Telegram channel."""
     try:
@@ -260,7 +291,7 @@ async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: i
             chat_id=channel_id,
             document=open(file_path, "rb"),
             filename=os.path.basename(file_path),
-            caption="📦 Daily backup: Current entries.csv file."
+            caption="📦 Daily #backup: Current entries.csv file."
         )
         await app.shutdown()
         logger.info("Successfully sent daily CSV backup to logs channel.")
@@ -329,32 +360,27 @@ def add_category(category: str) -> bool:
         logger.error(f"Error writing categories: {str(e)}")
         return False
 
-def read_entries(group_id: Optional[int] = None, category: Optional[str] = None) -> List[Dict[str, str]]:
-    """Read entries from the CSV file with optional filtering by group_id and category."""
+def read_entries(category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Read entries from the CSV file with optional filtering by category only."""
     entries = []
     try:
         with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # Fill in missing fields with defaults for backward compatibility
+                # Fill in missing fields
                 if "category" not in row:
                     row["category"] = "General"
-                if "group_id" not in row:
-                    row["group_id"] = ""
-                
-                # Apply filters if specified
-                if group_id is not None and row["group_id"] and int(row["group_id"]) != group_id:
-                    continue
+                # Remove group_id if present from previous versions
+                row.pop("group_id", None)
                 if category is not None and row["category"] != category:
                     continue
-                    
                 entries.append(row)
     except Exception as e:
         logger.error(f"Error reading entries: {str(e)}")
     return entries
 
 def write_entries(entries: List[Dict[str, str]]) -> bool:
-    """Write entries to the CSV file."""
+    """Write entries to the CSV file (category only, no group_id)."""
     try:
         with open(ENTRIES_FILE, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
@@ -365,26 +391,18 @@ def write_entries(entries: List[Dict[str, str]]) -> bool:
         logger.error(f"Error writing entries: {str(e)}")
         return False
 
-def add_entry(text: str, link: str, category: str = "General", group_id: Optional[int] = None) -> bool:
-    """Add a new entry to the CSV file."""
+def add_entry(text: str, link: str, category: str = "General") -> bool:
+    """Add a new entry (no group-specific logic)."""
     entries = read_entries()
-    
-    # Check if entry already exists
     for entry in entries:
         if entry["text"] == text and entry["link"] == link:
-            if (group_id is None or entry["group_id"] == str(group_id)):
-                return False
-    
-    # Make sure category exists or create it
+            return False
     add_category(category)
-    
     new_entry = {
-        "text": text, 
-        "link": link, 
-        "category": category,
-        "group_id": str(group_id) if group_id else ""
+        "text": text,
+        "link": link,
+        "category": category
     }
-    
     entries.append(new_entry)
     return write_entries(entries)
 
@@ -396,48 +414,48 @@ def delete_entry(index: int) -> bool:
         return write_entries(entries)
     return False
 
-def clear_all_entries(group_id: Optional[int] = None, category: Optional[str] = None) -> int:
-    """Clear all entries, optionally filtered by group_id and/or category.
-    Returns the number of entries deleted."""
+def clear_all_entries(category: Optional[str] = None) -> int:
+    """Clear all entries, optionally filtered by category only."""
     all_entries = read_entries()
-    
-    if group_id is None and category is None:
-        # Clear all entries
+    if category is None:
         count = len(all_entries)
         return count if write_entries([]) else 0
-    
-    # Filter entries to keep
     entries_to_keep = []
     count = 0
-    
     for entry in all_entries:
-        should_delete = True
-        
-        if group_id is not None and entry["group_id"] and int(entry["group_id"]) != group_id:
-            should_delete = False
-        if category is not None and entry["category"] != category:
-            should_delete = False
-            
-        if should_delete:
-            count += 1
-        else:
+        if entry["category"] != category:
             entries_to_keep.append(entry)
-    
+        else:
+            count += 1
     if count > 0:
         success = write_entries(entries_to_keep)
         return count if success else 0
     return 0
 
-def search_entries(query: str, group_id: Optional[int] = None, category: Optional[str] = None) -> List[Dict[str, str]]:
-    """Search for entries matching the query, with optional group_id and category filtering."""
-    # Get entries with the specified group_id and category filters
-    entries = read_entries(group_id=group_id, category=category)
-    
-    # If no query provided, just return filtered entries
+# --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
+
+def search_entries_advanced(query: str, category: Optional[str] = None, top_n: int = 8) -> List[Dict[str, str]]:
+    """
+    Fuzzy search in entries and return top_n most relevant ones (by text/category fields).
+    """
+    entries = read_entries(category=category)
+    if not query:
+        return entries[:top_n]  # Return first N if no query
+    query = query.strip().lower()
+    scored = []
+    for entry in entries:
+        score_text = fuzz.partial_ratio(query, entry["text"].lower())
+        score_cat = fuzz.partial_ratio(query, entry.get("category", "").lower())
+        max_score = max(score_text, score_cat)
+        scored.append((max_score, entry))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [e for _, e in scored[:top_n]]
+
+def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Search for entries matching the query, with optional category filtering (no group)."""
+    entries = read_entries(category=category)
     if not query:
         return entries
-    
-    # Search in both text and category fields
     query = query.lower()
     return [entry for entry in entries if 
             query in entry["text"].lower() or 
@@ -448,15 +466,25 @@ async def load_llm():
     try:
         logger.info(f"Using Groq API with model: {GROQ_MODEL}")
         
-        if not GROQ_API_KEY:
+        if not TOGETHER_API_KEY:  # Still using the TOGETHER_API_KEY variable name for now
             logger.error("GROQ_API_KEY is not set. Please set it in .env file or environment variables.")
             raise ValueError("GROQ_API_KEY is required")
         
-        # Initialize client and return it directly (no need to keep tokenizer and model separately)
+        # Return a basic structure to confirm Groq setup
         return {"groq_client": True}
     except Exception as e:
         logger.error(f"Error initializing Groq client: {str(e)}")
         raise
+
+def get_context_for_question(question: str, category: Optional[str] = None, top_n: int = 8) -> str:
+    """
+    Build context string from most relevant entries for a question.
+    """
+    relevant_entries = search_entries_advanced(question, category, top_n)
+    return "\n\n".join(
+        f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}"
+        for entry in relevant_entries
+    )
 
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -472,17 +500,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/here &lt;your question &gt; - Ask a question (when replying to someone)\n"
     )
     
-    if is_user_admin:
-        admin_text = (
-            "/list - List knowledge entries (admin only)\n"
-            "/add \"entry text\" \"message_link\" \"category\" - Add a new entry\n"
-            "/download - Download the current CSV file\n"
-            "/upload - Upload a CSV file\n"
-            "/clear - Clear all entries or entries in a specific category\n"
-        )
-        help_text += admin_text
+#    if is_user_admin:
+#       admin_text = (
+#            "/list - List knowledge entries (admin only)\n"
+#            "/add \"entry text\" \"message_link\" \"category\" - Add a new entry\n"
+#            "/download - Download the current CSV file\n"
+#            "/upload - Upload a CSV file\n"
+#            "/clear - Clear all entries or entries in a specific category\n"
+#        )
+#        help_text += admin_text
     
-    help_text += "\nUse categories to organize your knowledge entries."
+ #   help_text += "\nUse categories to organize your knowledge entries."
     await update.message.reply_html(help_text)
     
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -510,15 +538,8 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Send initial thinking message
     thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
     
-    # Determine group ID for group-specific entries if in a group chat
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Get entries for context - specific to this group if in a group chat
-    entries = read_entries(group_id=group_id)
-    
-    if not entries:
+    context_text = get_context_for_question(question, top_n=8)
+    if not context_text.strip():
         await thinking_message.delete()
         await replied_msg.reply_text(
             f"{replied_user.mention_html()}, no knowledge entries found to answer your question.", 
@@ -526,49 +547,38 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await update.message.delete()
         return
-    
+
     try:
-        # Load LLM components
         await thinking_message.edit_text("🤔")
-        
-        # Just validate API key
         await load_llm()
-        
         await thinking_message.edit_text("⚡")
-        
-        # Create context from entries with categories
-        context_entries = []
-        for entry in entries:
-            category = entry.get("category", "General")
-            entry_text = f"Category: {category}\nEntry: {entry['text']}\nSource: {entry['link']}"
-            context_entries.append(entry_text)
-        
-        context_text = "\n\n".join(context_entries)
-        
         prompt = build_prompt(question, context_text)
-        
-        # Generate response
+
+        # Build keywords from relevant entries for hyperlinks
+        relevant_entries = search_entries_advanced(question, top_n=8)
+        keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
-        
-        # Add hyperlinks to the answer
-        keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
-        
-        # Send response to the replied user
+
         await thinking_message.delete()
-        # Inside the here_command function:
-        await replied_msg.reply_text(
-            f"{replied_user.mention_html()} 👇 {final_answer}",
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True  # Disable Telegram link previews and web previews
-        )
-        
-        # Delete the original command message
+        if len(final_answer) > 4000:
+            final_answer = final_answer[:3900] + "\n\n... (message truncated due to length)"
+        try:
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()} 👇 {clean_telegram_html(final_answer)}",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()}, fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!",
+                parse_mode=ParseMode.HTML
+            )
         try:
             await update.message.delete()
         except Exception as e:
             logger.error(f"Error deleting message: {str(e)}")
-    
     except Exception as e:
         logger.error(f"Error generating LLM response: {str(e)}")
         await thinking_message.delete()
@@ -577,8 +587,6 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Error: {str(e)[:100]}...",
             parse_mode=ParseMode.HTML
         )
-        
-        # Still try to delete the command message
         try:
             await update.message.delete()
         except Exception as e:
@@ -623,68 +631,37 @@ def format_error_for_user(error: Exception) -> str:
 
 @admin_only
 async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Add a new entry with optional category and group specificity."""
-    # Check command format
-    text = update.message.text[5:].strip()  # Remove "/add "
-    
-    # Extract text, link, and optional category using regex to handle quoted arguments
-    # Handle quoted arguments pattern with proper escaping for nested quotes
+    text = update.message.text[5:].strip()
     match = re.match(r'"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
-    
     if not match:
         await update.message.reply_text(
             "Please use the format: /add \"entry text\" \"message_link\" \"optional_category\""
         )
         return
-    
-    # Extract the matched groups
     match_groups = match.groups()
     entry_text = match_groups[0]
     link = match_groups[1]
     category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
-    
-    # Get group ID if in a group
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Add the entry
-    if add_entry(entry_text, link, category, group_id):
+    if add_entry(entry_text, link, category):
         await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
     else:
         await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
 
 @admin_only
 async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List all entries with pagination, category filtering, and group specificity."""
     args = context.args if context.args else []
-    
-    # Parse arguments - format: ["query", "category=value"]
     query = ""
     category = None
-    
     for arg in args:
         if arg.startswith("category="):
             category = arg.split("=")[1] if len(arg.split("=")) > 1 else None
         else:
             query = arg
-    
     page = int(context.user_data.get('page', 0))
-    
-    # Determine group ID for group-specific entries
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Get entries, filtered by search query, category, and group if provided
-    entries = search_entries(query, group_id, category) if query else read_entries(group_id, category)
-    
-    # Calculate pagination
+    entries = search_entries(query, category) if query else read_entries(category)
     total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
     start_idx = page * ENTRIES_PER_PAGE
     end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
-    
-    # Generate message text
     if not entries:
         message = "No entries found."
         if category:
@@ -693,16 +670,12 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             message += f" matching '{query}'"
         await update.message.reply_text(message)
         return
-    
-    # Build header message
     message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
     if category:
         message += f" in category '{category}'"
     if query:
         message += f" matching '{query}'"
     message += ":\n\n"
-    
-    # Add entries to message
     for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
         message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
         message += f"   🔗 {entry['link']}\n\n"
@@ -756,8 +729,24 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data['page'] = page
     context.user_data['category'] = category
     
-    # Send message
-    await update.message.reply_text(message, reply_markup=reply_markup)
+    # ********** PATCH STARTS HERE **********
+    # Telegram message limit is 4096, use 4000 as a safe limit for buttons, etc.
+    MAX_LEN = 4000
+    if len(message) > MAX_LEN:
+        logger.warning("Entry list message too long, splitting into multiple messages.")
+        # Split at 4000 chars, but try not to break in the middle of a line
+        lines = message.split('\n')
+        chunk = ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > MAX_LEN:
+                await update.message.reply_text(chunk, reply_markup=reply_markup)
+                chunk = ""
+            chunk += line + '\n'
+        if chunk:
+            await update.message.reply_text(chunk, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(message, reply_markup=reply_markup)
+    # ********** PATCH ENDS HERE **********
 
 # Update the handle_pagination function to check for admin permissions (around line 557)
 async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -778,32 +767,19 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await query.answer()
     
-    # Handle category selection
     if data.startswith("cat:"):
         category = data.split(":")[1]
-        context.user_data['page'] = 0  # Reset page when changing category
+        context.user_data['page'] = 0
         context.user_data['category'] = category
-        
-        # Re-trigger list with the selected category
         fake_update = Update(update.update_id, message=update.effective_message)
         await list_entries(fake_update, context)
         return
-        
-    # Handle page navigation
     if data.startswith("page:"):
         parts = data.split(":")
         page = int(parts[1])
         category = parts[2] if len(parts) > 2 and parts[2] else None
-        
         context.user_data['page'] = page
-        
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-        
-        # Get entries with filtering
-        entries = read_entries(group_id, category)
+        entries = read_entries(category)
         
         # Calculate pagination
         total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
@@ -816,10 +792,32 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             message += f" in category '{category}'"
         message += ":\n\n"
         
-        # Add entries to message
+        # Add entries to message with length limit check
+        message_len = len(message)
+        max_len = 3800  # Leave room for markup and footer
+        
         for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
-            message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
-            message += f"   🔗 {entry['link']}\n\n"
+            entry_text = entry.get('text', '').strip()
+            category_text = entry.get('category', 'General')
+            link_text = entry.get('link', '').strip()
+            
+            # Truncate entry text if it's too long
+            if len(entry_text) > 100:
+                entry_text = entry_text[:97] + "..."
+                
+            # Truncate link if it's too long
+            if len(link_text) > 60:
+                link_text = link_text[:57] + "..."
+                
+            entry_message = f"{i}. [{category_text}] {entry_text}\n   🔗 {link_text}\n\n"
+            
+            # Check if adding this entry would exceed message length
+            if message_len + len(entry_message) > max_len:
+                message += "\n(Some entries truncated due to message length limit)"
+                break
+                
+            message += entry_message
+            message_len += len(entry_message)
         
         # Create navigation buttons
         keyboard = []
@@ -866,61 +864,48 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
         
-        # Update message
-        await query.edit_message_text(message, reply_markup=reply_markup)
+        # Update message with error handling
+        try:
+            await query.edit_message_text(message, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Error updating message: {str(e)}")
+            # If message is too long, try with a simpler message
+            try:
+                simple_message = f"📚 Showing entries for {category or 'all categories'}\n(Message simplified due to length issues)"
+                await query.edit_message_text(simple_message, reply_markup=reply_markup)
+            except Exception as e2:
+                logger.error(f"Failed to send simplified message: {str(e2)}")
         return
 
-    # Rest of the function remains the same...
     elif data.startswith("delete:"):
         index = int(data.split(":")[1])
         if delete_entry(index):
             await query.edit_message_text(f"✅ Entry #{index+1} deleted successfully.")
         else:
             await query.edit_message_text(f"❌ Failed to delete entry #{index+1}.")
-            
-    # Handle clear all entries
     elif data.startswith("clear:"):
         category_filter = data.split(":")[1]
         category = None if category_filter == 'all' else category_filter
-        
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-        
-        # Confirm before clearing
         confirm_text = "Are you sure you want to clear "
         if category:
             confirm_text += f"all entries in category '{category}'?"
         else:
             confirm_text += "ALL entries?"
-            
         keyboard = [
             [
                 InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
                 InlineKeyboardButton("Cancel", callback_data="cancel_clear")
             ]
         ]
-        
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
-        
-    # Handle confirm clear action
     elif data.startswith("confirm_clear:"):
         category_filter = data.split(":")[1]
         category = None if category_filter == 'all' else category_filter
-        
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-            
-        count = clear_all_entries(group_id, category)
+        count = clear_all_entries(category)
         if count > 0:
             await query.edit_message_text(f"✅ Successfully cleared {count} entries.")
         else:
             await query.edit_message_text("❌ No entries were cleared or an error occurred.")
-            
-    # Handle cancel clear action
     elif data == "cancel_clear":
         await query.edit_message_text("Operation cancelled.")
 
@@ -942,17 +927,28 @@ def build_prompt(question: str, context_text: str) -> str:
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
-    Replace keywords with Telegram markdown links in the answer.
+    Replace keywords with Telegram HTML links in the answer.
 
     :param answer: The generated answer text.
     :param keywords: A dictionary of keywords and their corresponding URLs.
     :return: Updated answer with hyperlinks.
     """
+    def escape_html(text):
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+        )
+
     for word, url in keywords.items():
-        # Replace only the full word or part of word with the hyperlink
+        # Escape HTML in the word and URL
+        safe_word = escape_html(word)
+        safe_url = escape_html(url)
+        # Replace only the full word with the hyperlink (HTML)
         answer = re.sub(
-            rf"(?<!\w)({re.escape(word)})(?!\w)",  # Match word boundaries to replace only intended parts
-            f"[\\1]({url})",  # Telegram markdown format
+            rf"(?<!\w)({re.escape(word)})(?!\w)",
+            f'<a href="{safe_url}">{safe_word}</a>',
             answer
         )
     return answer
@@ -961,42 +957,31 @@ async def generate_response(prompt: str, _, __=None) -> str:
     try:
         logger.info("Sending request to Groq API...")
         
-        # Import here to ensure dependencies are available
-        from groq import AsyncGroq
+        # Import groq only when needed
+        import groq
         
-        # Initialize the Groq client
-        client = AsyncGroq(api_key=GROQ_API_KEY)
+        # Initialize Groq client
+        client = groq.AsyncGroq(api_key=TOGETHER_API_KEY)  # Using the existing variable name but it now contains Groq API key
         
-        # Make sure we're using a valid model name
-        # Some common Groq models: llama3-70b-8192, llama3-8b-8192, mixtral-8x7b-32768
-        # The model should be without hyphens in "versatile" if that was the issue
-        valid_model = GROQ_MODEL
-        if valid_model == "llama-3.3-70b-versatile":
-            valid_model = "llama3-70b-8192"
-        
-        # Send request to Groq API
-        logger.info(f"Using model: {valid_model}")
+        # Use chat completions with proper formatting
         chat_completion = await client.chat.completions.create(
-            model=valid_model,
+            model=GROQ_MODEL,  # Use the configured Groq model
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=200,  # Increased for more detailed responses
-            top_p=0.95,      # Slightly increased for better creativity
+            max_tokens=800,  # Increased token count but still within safe limits
+            top_p=0.95
         )
         
         # Extract the response
-        response = chat_completion.choices[0].message.content
+        answer = chat_completion.choices[0].message.content
         
         logger.info("Received response from Groq API")
-        return response.strip()
+        return answer.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Handle the /ask command to respond to user questions.
-    """
     question = " ".join(context.args)
     if not question:
         await update.message.reply_text(
@@ -1004,43 +989,34 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/ask Whose birthdays are in the month of April?"
         )
         return
-
-    # Send initial thinking message
     thinking_message = await update.message.reply_text("💣")
-
-    # Load knowledge base
-    group_id = update.effective_chat.id if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP] else None
-    entries = read_entries(group_id=group_id)
-    if not entries:
+    # PATCH: Use search-then-summarize for context
+    context_text = get_context_for_question(question, top_n=8)
+    if not context_text.strip():
         await thinking_message.delete()
         await update.message.reply_text("No knowledge entries found to answer your question.")
         return
-
-    # Build context and prompt
-    context_entries = "\n\n".join(
-        f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
-    )
-    prompt = build_prompt(question, context_entries)
-
-    # Generate response
     try:
-        await load_llm()  # Just validate API key
+        await load_llm()
+        prompt = build_prompt(question, context_text)
+        relevant_entries = search_entries_advanced(question, top_n=8)
+        keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
-
-        # Add hyperlinks
-        keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
-
-        # Format the final answer in Markdown
         output = f"{final_answer}"
-
-        # Send final response
         await thinking_message.delete()
-        # Inside the ask_question function:
-        await update.message.reply_html(
-            output,
-            disable_web_page_preview=True  # Disable Telegram link previews and web previews
-        )
+        if len(output) > 4000:
+            output = output[:3900] + "\n\n... (message truncated due to length)"
+        try:
+            await update.message.reply_html(
+                clean_telegram_html(output),
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            await update.message.reply_text(
+                "fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!"
+            )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
@@ -1048,70 +1024,32 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                                         
 @admin_only
 async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Command to clear all entries or by category."""
-    # Parse arguments
     category = None
     if context.args:
         category = " ".join(context.args)
-    
-    # Determine group ID for group-specific entries
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Confirm before clearing
     confirm_text = "Are you sure you want to clear "
     if category:
         confirm_text += f"all entries in category '{category}'?"
     else:
         confirm_text += "ALL entries?"
-        
     keyboard = [
         [
             InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
             InlineKeyboardButton("Cancel", callback_data="cancel_clear")
         ]
     ]
-    
     await update.message.reply_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 @admin_only
 async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Download the entries CSV file."""
     if not os.path.exists(ENTRIES_FILE):
         await update.message.reply_text("No entries file exists yet.")
         return
-    
-    # Get entries for the current group if in a group chat
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-        entries = read_entries(group_id)
-        
-        # Create a temporary file with only the group's entries
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
-            try:
-                with open(temp_file.name, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-                    writer.writeheader()
-                    writer.writerows(entries)
-                
-                # Send the filtered CSV
-                await update.message.reply_document(
-                    document=open(temp_file.name, "rb"),
-                    filename=f"entries_{update.effective_chat.title or 'group'}.csv",
-                    caption=f"Here's your knowledge base CSV file for this group. ({len(entries)} entries)"
-                )
-            finally:
-                # Clean up temp file
-                os.unlink(temp_file.name)
-    else:
-        # For private chats, send the full CSV
-        await update.message.reply_document(
-            document=open(ENTRIES_FILE, "rb"),
-            filename="entries.csv",
-            caption=f"Here's your complete knowledge base CSV file."
-        )
+    await update.message.reply_document(
+        document=open(ENTRIES_FILE, "rb"),
+        filename="entries.csv",
+        caption="Here's your complete knowledge base CSV file."
+    )
 
 @admin_only
 async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1130,131 +1068,83 @@ async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 @admin_only
 async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the uploaded CSV file."""
-    # Always try to process CSV files when they're uploaded in reply
     if update.message.reply_to_message and update.message.document:
-        # Set the state to true to ensure processing continues
         context.user_data["awaiting_csv"] = True
-    
     if not context.user_data.get("awaiting_csv"):
         return
-    
-    # Reset state
     context.user_data["awaiting_csv"] = False
-    
     if not update.message.document:
         await update.message.reply_text("Please upload a CSV file.")
         return
-    
     document = update.message.document
     file_name = document.file_name.lower() if document.file_name else "unnamed.file"
-    
-    # More permissive file checking - accept any file and try to process as CSV
     uploaded_entries = []
     processing_status = await update.message.reply_text("⏳ Processing your uploaded file...")
-    
     try:
-        # Download the file
         file = await context.bot.get_file(document.file_id)
-        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             await file.download_to_drive(temp_file.name)
             file_path = temp_file.name
-        
-        # Try multiple parsing approaches
         file_content = ""
         rows_parsed = []
-        
-        # First read the raw content to examine
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 file_content = f.read()
         except UnicodeDecodeError:
-            # Try different encodings if UTF-8 fails
             try:
                 with open(file_path, "r", encoding="latin-1") as f:
                     file_content = f.read()
             except Exception as e:
                 await processing_status.edit_text(f"Error reading file: {str(e)}")
                 return
-                
-        # Check if content looks like a CSV
         if not any(separator in file_content for separator in [",", "\t", ";"]):
             await processing_status.edit_text(
                 "The uploaded file doesn't appear to be in CSV format. Expected comma, tab, or semicolon delimiters."
             )
             return
-            
-        # Try different delimiters
         for delimiter in [",", "\t", ";"]:
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     reader = csv.DictReader(f, delimiter=delimiter)
                     if not reader.fieldnames:
                         continue
-                        
-                    # Check for required headers
                     required_headers = ["text", "link"]
                     if all(header in reader.fieldnames for header in required_headers):
-                        # Found a working delimiter with required headers
-                        rows_parsed = list(reader)  # Convert to list to preserve after file close
+                        rows_parsed = list(reader)
                         await processing_status.edit_text(f"✅ Found CSV format with {delimiter} delimiter")
                         break
             except Exception as e:
                 logger.info(f"Parsing with delimiter {delimiter} failed: {str(e)}")
                 continue
-                
-        # If we didn't parse any rows with standard headers, try alternative approaches
         if not rows_parsed:
             await processing_status.edit_text(
                 "Could not find required 'text' and 'link' columns in the CSV. "
                 "Please check the file format and try again."
             )
             return
-            
-        # Get current group ID if in a group
-        current_group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            current_group_id = update.effective_chat.id
-            
         # Process the successfully parsed rows
         for i, row in enumerate(rows_parsed, 1):
             try:
-                # Check if we have text and link - the minimum required fields
                 text = row.get("text", "").strip()
                 link = row.get("link", "").strip()
-                
                 if not text or not link:
                     logger.warning(f"Skipping row {i}: Missing required text or link field")
                     continue
-                    
-                # Create entry with defaults for missing fields
                 new_entry = {
                     "text": text,
                     "link": link,
-                    "category": row.get("category", "General").strip() or "General",
-                    "group_id": row.get("group_id", "").strip()
+                    "category": row.get("category", "General").strip() or "General"
                 }
-                
-                # If in a group and no group_id specified, assign current group
-                if current_group_id and not new_entry["group_id"]:
-                    new_entry["group_id"] = str(current_group_id)
-                    
                 uploaded_entries.append(new_entry)
             except Exception as row_error:
                 logger.error(f"Error processing row {i}: {str(row_error)}")
-                # Continue processing other rows despite this error
-        # Clean up temp file at the end
         try:
             os.unlink(file_path)
         except Exception as e:
             logger.error(f"Error cleaning up temp file: {str(e)}")
-        
         if not uploaded_entries:
             await processing_status.edit_text("No valid entries found in the CSV file.")
             return
-        
-        # Confirm before overwriting
         await processing_status.delete()
         message = f"✅ Found {len(uploaded_entries)} valid entries in the CSV file. Do you want to:"
         keyboard = [
@@ -1264,89 +1154,49 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             ],
             [InlineKeyboardButton("Cancel", callback_data="csv:cancel")]
         ]
-        
-        # Store entries for later use
         context.user_data["uploaded_entries"] = uploaded_entries
-        
         await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
-        
     except Exception as e:
         logger.error(f"Error processing CSV upload: {str(e)}")
         try:
             await processing_status.delete()
         except:
-            pass  # Ignore if status message already deleted
+            pass
         await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
 
 async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle callback queries for CSV operations."""
     query = update.callback_query
     await query.answer()
-    
     action = query.data.split(":", 1)[1]
-    
     if action == "cancel":
         await query.edit_message_text("CSV import canceled.")
         return
-    
     uploaded_entries = context.user_data.get("uploaded_entries", [])
-    
     if not uploaded_entries:
         await query.edit_message_text("No entries to process.")
         return
-    
     try:
-        # Determine group ID for group-specific entries
-        group_id = None
-        if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-            group_id = update.effective_chat.id
-        
         if action == "replace":
-            # If in a group, only replace entries for this group
-            if group_id:
-                # Keep entries that don't belong to this group
-                other_entries = [entry for entry in read_entries() 
-                                if entry.get("group_id") and entry.get("group_id") != str(group_id)]
-                
-                # Add the new entries for this group
-                combined_entries = other_entries + uploaded_entries
-                success = write_entries(combined_entries)
-                message = f"✅ Successfully replaced {len(uploaded_entries)} entries for this group." if success else "❌ Failed to update entries."
-            else:
-                # In private chat, replace all entries
-                success = write_entries(uploaded_entries)
-                message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
-        
+            success = write_entries(uploaded_entries)
+            message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
         elif action == "append":
-            # Append to existing entries
             current_entries = read_entries()
-            
-            # Use a more comprehensive way to check for duplicates
             new_entries = []
             existing_count = 0
-            
             for entry in uploaded_entries:
-                # Check if this exact entry already exists
                 is_duplicate = False
                 for existing in current_entries:
                     if (existing["text"] == entry["text"] and 
-                        existing["link"] == entry["link"] and
-                        (not group_id or existing.get("group_id", "") == str(group_id))):
+                        existing["link"] == entry["link"]):
                         is_duplicate = True
                         existing_count += 1
                         break
-                
                 if not is_duplicate:
                     new_entries.append(entry)
-            
-            # Combine and save
             combined_entries = current_entries + new_entries
             success = write_entries(combined_entries)
-            
             message = f"✅ Added {len(new_entries)} new entries (skipped {existing_count} duplicates)." if success else "❌ Failed to update entries."
-        
         await query.edit_message_text(message)
-        
     except Exception as e:
         logger.error(f"Error handling CSV action: {str(e)}")
         await query.edit_message_text(f"Error: {str(e)}")
