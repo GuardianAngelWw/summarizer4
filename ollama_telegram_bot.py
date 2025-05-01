@@ -34,7 +34,11 @@ import json
 from flask import Flask, jsonify
 import logging.handlers
 # Groq API client will be imported as needed
-
+# Add fuzzy matching for advanced search-then-summarize (preferred: rapidfuzz)
+try:
+    from rapidfuzz import fuzz
+except ImportError:
+    raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
 # No need for duplicate imports as they're already defined above
 
 # Add these constants at the top of your file
@@ -401,6 +405,25 @@ def clear_all_entries(category: Optional[str] = None) -> int:
         return count if success else 0
     return 0
 
+# --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
+
+def search_entries_advanced(query: str, category: Optional[str] = None, top_n: int = 8) -> List[Dict[str, str]]:
+    """
+    Fuzzy search in entries and return top_n most relevant ones (by text/category fields).
+    """
+    entries = read_entries(category=category)
+    if not query:
+        return entries[:top_n]  # Return first N if no query
+    query = query.strip().lower()
+    scored = []
+    for entry in entries:
+        score_text = fuzz.partial_ratio(query, entry["text"].lower())
+        score_cat = fuzz.partial_ratio(query, entry.get("category", "").lower())
+        max_score = max(score_text, score_cat)
+        scored.append((max_score, entry))
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [e for _, e in scored[:top_n]]
+
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
     """Search for entries matching the query, with optional category filtering (no group)."""
     entries = read_entries(category=category)
@@ -425,6 +448,16 @@ async def load_llm():
     except Exception as e:
         logger.error(f"Error initializing Groq client: {str(e)}")
         raise
+
+def get_context_for_question(question: str, category: Optional[str] = None, top_n: int = 8) -> str:
+    """
+    Build context string from most relevant entries for a question.
+    """
+    relevant_entries = search_entries_advanced(question, category, top_n)
+    return "\n\n".join(
+        f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}"
+        for entry in relevant_entries
+    )
 
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -478,15 +511,8 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Send initial thinking message
     thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
     
-    # Determine group ID for group-specific entries if in a group chat
-    group_id = None
-    if update.effective_chat.type in [ChatType.GROUP, ChatType.SUPERGROUP]:
-        group_id = update.effective_chat.id
-    
-    # Get entries for context - specific to this group if in a group chat
-    entries = read_entries()
-    
-    if not entries:
+    context_text = get_context_for_question(question, top_n=8)
+    if not context_text.strip():
         await thinking_message.delete()
         await replied_msg.reply_text(
             f"{replied_user.mention_html()}, no knowledge entries found to answer your question.", 
@@ -494,60 +520,38 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         await update.message.delete()
         return
-    
+
     try:
-        # Load LLM components
         await thinking_message.edit_text("🤔")
-        
-        # Just validate API key
         await load_llm()
-        
         await thinking_message.edit_text("⚡")
-        
-        # Create context from entries with categories
-        context_entries = []
-        for entry in entries:
-            category = entry.get("category", "General")
-            entry_text = f"Category: {category}\nEntry: {entry['text']}\nSource: {entry['link']}"
-            context_entries.append(entry_text)
-        
-        context_text = "\n\n".join(context_entries)
-        
         prompt = build_prompt(question, context_text)
-        
-        # Generate response
+
+        # Build keywords from relevant entries for hyperlinks
+        relevant_entries = search_entries_advanced(question, top_n=8)
+        keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
-        
-        # Add hyperlinks to the answer
-        keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
-        
-        # Send response to the replied user
+
         await thinking_message.delete()
-        # Check if response is too long
-        if len(final_answer) > 4000:  # Telegram has ~4096 char limit
+        if len(final_answer) > 4000:
             final_answer = final_answer[:3900] + "\n\n... (message truncated due to length)"
-        # Inside the here_command function:
         try:
             await replied_msg.reply_text(
                 f"{replied_user.mention_html()} 👇 {final_answer}",
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True  # Disable Telegram link previews and web previews
+                disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
-            # Send a simplified fallback message
             await replied_msg.reply_text(
                 f"{replied_user.mention_html()}, I found an answer to your question, but had trouble formatting it.",
                 parse_mode=ParseMode.HTML
             )
-        
-        # Delete the original command message
         try:
             await update.message.delete()
         except Exception as e:
             logger.error(f"Error deleting message: {str(e)}")
-    
     except Exception as e:
         logger.error(f"Error generating LLM response: {str(e)}")
         await thinking_message.delete()
@@ -556,8 +560,6 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"Error: {str(e)[:100]}...",
             parse_mode=ParseMode.HTML
         )
-        
-        # Still try to delete the command message
         try:
             await update.message.delete()
         except Exception as e:
@@ -945,44 +947,30 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
     thinking_message = await update.message.reply_text("💣")
-    entries = read_entries()
-    if not entries:
+    # PATCH: Use search-then-summarize for context
+    context_text = get_context_for_question(question, top_n=8)
+    if not context_text.strip():
         await thinking_message.delete()
         await update.message.reply_text("No knowledge entries found to answer your question.")
         return
-
-    # Build context and prompt
-    context_entries = "\n\n".join(
-        f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}" for entry in entries
-    )
-    prompt = build_prompt(question, context_entries)
-
-    # Generate response
     try:
-        await load_llm()  # Just validate API key
+        await load_llm()
+        prompt = build_prompt(question, context_text)
+        relevant_entries = search_entries_advanced(question, top_n=8)
+        keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
-
-        # Add hyperlinks
-        keywords = {entry["text"]: entry["link"] for entry in entries}
         final_answer = add_hyperlinks(answer, keywords)
-
-        # Format the final answer in Markdown
         output = f"{final_answer}"
-
-        # Send final response
         await thinking_message.delete()
-        # Check message length to avoid Telegram error
-        if len(output) > 4000:  # Telegram has ~4096 char limit
+        if len(output) > 4000:
             output = output[:3900] + "\n\n... (message truncated due to length)"
-        # Inside the ask_question function:
         try:
             await update.message.reply_html(
                 output,
-                disable_web_page_preview=True  # Disable Telegram link previews and web previews
+                disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
-            # Send a simplified fallback message
             await update.message.reply_text(
                 "I found an answer to your question, but had trouble formatting it. Please try asking in a different way."
             )
