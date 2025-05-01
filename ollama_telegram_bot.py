@@ -256,6 +256,33 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
         logger.error(f"Error checking admin status: {str(e)}")
         return False
 
+def clean_telegram_html(text: str) -> str:
+    """
+    Clean/sanitize string for Telegram HTML compatibility:
+    - Replace <br>, <br/>, </br> with newlines.
+    - Remove all other unsupported tags.
+    - Optionally, collapse multiple newlines.
+    """
+    # Replace <br> and variants with newline
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</br\s*>', '\n', text, flags=re.IGNORECASE)
+
+    # Allowed Telegram HTML tags
+    allowed = ['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','blockquote']
+    # Remove all other HTML tags except allowed
+    text = re.sub(
+        r'</?(?!' + '|'.join(allowed) + r')\b[^>]*>',
+        '',
+        text
+    )
+
+    # Collapse >2 newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text
+
+# ... [rest of your code remains the same, but update message sending as follows] ...
+
 async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
     """Send the CSV file to the specified Telegram channel."""
     try:
@@ -538,7 +565,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             final_answer = final_answer[:3900] + "\n\n... (message truncated due to length)"
         try:
             await replied_msg.reply_text(
-                f"{replied_user.mention_html()} 👇 {final_answer}",
+                f"{replied_user.mention_html()} 👇 {clean_telegram_html(final_answer)}",
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True
             )
@@ -982,7 +1009,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             output = output[:3900] + "\n\n... (message truncated due to length)"
         try:
             await update.message.reply_html(
-                output,
+                clean_telegram_html(output),
                 disable_web_page_preview=True
             )
         except Exception as e:
