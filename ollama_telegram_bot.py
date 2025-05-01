@@ -165,7 +165,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAGpKtzefMx23B9zk7LLt1JdLVuf9rJM-Pw"
+BOT_TOKEN = "6614402193:AAEnsdd9byWO2m8u2HoYtS5UmTOlXIX5DQM"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -255,6 +255,33 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
+
+def clean_telegram_html(text: str) -> str:
+    """
+    Clean/sanitize string for Telegram HTML compatibility:
+    - Replace <br>, <br/>, </br> with newlines.
+    - Remove all other unsupported tags.
+    - Optionally, collapse multiple newlines.
+    """
+    # Replace <br> and variants with newline
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</br\s*>', '\n', text, flags=re.IGNORECASE)
+
+    # Allowed Telegram HTML tags
+    allowed = ['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','blockquote']
+    # Remove all other HTML tags except allowed
+    text = re.sub(
+        r'</?(?!' + '|'.join(allowed) + r')\b[^>]*>',
+        '',
+        text
+    )
+
+    # Collapse >2 newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text
+
+# ... [rest of your code remains the same, but update message sending as follows] ...
 
 async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
     """Send the CSV file to the specified Telegram channel."""
@@ -407,22 +434,70 @@ def clear_all_entries(category: Optional[str] = None) -> int:
 
 # --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
 
-def search_entries_advanced(query: str, category: Optional[str] = None, top_n: int = 8) -> List[Dict[str, str]]:
+def search_entries_advanced(
+    query: str,
+    category: Optional[str] = None,
+    top_n: int = 8,
+    min_results: int = 2,
+    score_threshold: int = 50
+) -> List[Dict[str, str]]:
     """
-    Fuzzy search in entries and return top_n most relevant ones (by text/category fields).
+    Advanced fuzzy search in entries with keyword and full-query relevance.
+    - Tokenizes query and boosts entries matching more keywords.
+    - Allows threshold adjustment.
+    - Further boosts entries that match all words in the query.
+    - Guarantees at least min_results (if available).
     """
     entries = read_entries(category=category)
     if not query:
         return entries[:top_n]  # Return first N if no query
+
     query = query.strip().lower()
+    # Tokenize query into keywords (words of length >= 2)
+    keywords = [word for word in re.findall(r'\w+', query) if len(word) > 1]
+    keyword_set = set(keywords)
+
     scored = []
     for entry in entries:
-        score_text = fuzz.partial_ratio(query, entry["text"].lower())
-        score_cat = fuzz.partial_ratio(query, entry.get("category", "").lower())
-        max_score = max(score_text, score_cat)
-        scored.append((max_score, entry))
+        text = entry["text"].lower()
+        cat = entry.get("category", "").lower()
+
+        # Fuzzy scores for full query
+        score_text = fuzz.token_sort_ratio(query, text)
+        score_cat = fuzz.token_sort_ratio(query, cat)
+        score_partial_text = fuzz.partial_ratio(query, text)
+        score_partial_cat = fuzz.partial_ratio(query, cat)
+
+        # Keyword-based scoring
+        entry_words = set(re.findall(r'\w+', text + " " + cat))
+        keyword_matches = keyword_set & entry_words
+        keyword_match_count = len(keyword_matches)
+
+        # Boost if all query keywords are present
+        all_keywords_in_entry = keyword_set.issubset(entry_words)
+        keyword_boost = 10 * keyword_match_count
+        if all_keywords_in_entry and keyword_set:
+            keyword_boost += 20
+
+        # Composite score
+        composite_score = (
+            0.4 * score_text +
+            0.2 * score_cat +
+            0.2 * score_partial_text +
+            0.1 * score_partial_cat +
+            keyword_boost
+        )
+        scored.append((composite_score, entry))
+
+    # Sort by score, descending
     scored.sort(reverse=True, key=lambda x: x[0])
-    return [e for _, e in scored[:top_n]]
+
+    # Filter by threshold but ensure at least min_results
+    filtered = [e for score, e in scored if score >= score_threshold]
+    if len(filtered) < min_results:
+        filtered = [e for _, e in scored[:max(top_n, min_results)]]
+
+    return filtered[:top_n]
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
     """Search for entries matching the query, with optional category filtering (no group)."""
@@ -538,14 +613,14 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             final_answer = final_answer[:3900] + "\n\n... (message truncated due to length)"
         try:
             await replied_msg.reply_text(
-                f"{replied_user.mention_html()} 👇 {final_answer}",
+                f"{replied_user.mention_html()} 👇 {clean_telegram_html(final_answer)}",
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
             await replied_msg.reply_text(
-                f"{replied_user.mention_html()}, I found an answer to your question, but had trouble formatting it.",
+                f"{replied_user.mention_html()}, fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!",
                 parse_mode=ParseMode.HTML
             )
         try:
@@ -982,13 +1057,13 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             output = output[:3900] + "\n\n... (message truncated due to length)"
         try:
             await update.message.reply_html(
-                output,
+                clean_telegram_html(output),
                 disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
             await update.message.reply_text(
-                "I found an answer to your question, but had trouble formatting it. Please try asking in a different way."
+                "fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!"
             )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
