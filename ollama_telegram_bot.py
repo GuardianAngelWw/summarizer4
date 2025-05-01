@@ -1006,7 +1006,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""Adopt the persona of a fictional 'WB' mother who answers all her questions gracefully and through convenient emojis. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
+    return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
     - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
@@ -1019,6 +1019,7 @@ def build_prompt(question: str, context_text: str) -> str:
 
     Knowledge Base:
     {context_text}"""
+
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
