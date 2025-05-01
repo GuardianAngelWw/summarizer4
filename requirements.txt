@@ -17,4 +17,12 @@ nest_asyncio
 psutil
 python-telegram-bot[job-queue]
 apscheduler
+requests
+Flask
+APScheduler
+python-telegram-bot
+python-dotenv
+pytz
+waitress
+psutil
 rapidfuzz
