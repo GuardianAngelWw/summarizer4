@@ -17,3 +17,4 @@ nest_asyncio
 psutil
 python-telegram-bot[job-queue]
 apscheduler
+rapidfuzz
