@@ -702,8 +702,24 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context.user_data['page'] = page
     context.user_data['category'] = category
     
-    # Send message
-    await update.message.reply_text(message, reply_markup=reply_markup)
+    # ********** PATCH STARTS HERE **********
+    # Telegram message limit is 4096, use 4000 as a safe limit for buttons, etc.
+    MAX_LEN = 4000
+    if len(message) > MAX_LEN:
+        logger.warning("Entry list message too long, splitting into multiple messages.")
+        # Split at 4000 chars, but try not to break in the middle of a line
+        lines = message.split('\n')
+        chunk = ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > MAX_LEN:
+                await update.message.reply_text(chunk, reply_markup=reply_markup)
+                chunk = ""
+            chunk += line + '\n'
+        if chunk:
+            await update.message.reply_text(chunk, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(message, reply_markup=reply_markup)
+    # ********** PATCH ENDS HERE **********
 
 # Update the handle_pagination function to check for admin permissions (around line 557)
 async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
