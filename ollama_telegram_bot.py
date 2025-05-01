@@ -434,22 +434,70 @@ def clear_all_entries(category: Optional[str] = None) -> int:
 
 # --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
 
-def search_entries_advanced(query: str, category: Optional[str] = None, top_n: int = 8) -> List[Dict[str, str]]:
+def search_entries_advanced(
+    query: str,
+    category: Optional[str] = None,
+    top_n: int = 8,
+    min_results: int = 2,
+    score_threshold: int = 50
+) -> List[Dict[str, str]]:
     """
-    Fuzzy search in entries and return top_n most relevant ones (by text/category fields).
+    Advanced fuzzy search in entries with keyword and full-query relevance.
+    - Tokenizes query and boosts entries matching more keywords.
+    - Allows threshold adjustment.
+    - Further boosts entries that match all words in the query.
+    - Guarantees at least min_results (if available).
     """
     entries = read_entries(category=category)
     if not query:
         return entries[:top_n]  # Return first N if no query
+
     query = query.strip().lower()
+    # Tokenize query into keywords (words of length >= 2)
+    keywords = [word for word in re.findall(r'\w+', query) if len(word) > 1]
+    keyword_set = set(keywords)
+
     scored = []
     for entry in entries:
-        score_text = fuzz.partial_ratio(query, entry["text"].lower())
-        score_cat = fuzz.partial_ratio(query, entry.get("category", "").lower())
-        max_score = max(score_text, score_cat)
-        scored.append((max_score, entry))
+        text = entry["text"].lower()
+        cat = entry.get("category", "").lower()
+
+        # Fuzzy scores for full query
+        score_text = fuzz.token_sort_ratio(query, text)
+        score_cat = fuzz.token_sort_ratio(query, cat)
+        score_partial_text = fuzz.partial_ratio(query, text)
+        score_partial_cat = fuzz.partial_ratio(query, cat)
+
+        # Keyword-based scoring
+        entry_words = set(re.findall(r'\w+', text + " " + cat))
+        keyword_matches = keyword_set & entry_words
+        keyword_match_count = len(keyword_matches)
+
+        # Boost if all query keywords are present
+        all_keywords_in_entry = keyword_set.issubset(entry_words)
+        keyword_boost = 10 * keyword_match_count
+        if all_keywords_in_entry and keyword_set:
+            keyword_boost += 20
+
+        # Composite score
+        composite_score = (
+            0.4 * score_text +
+            0.2 * score_cat +
+            0.2 * score_partial_text +
+            0.1 * score_partial_cat +
+            keyword_boost
+        )
+        scored.append((composite_score, entry))
+
+    # Sort by score, descending
     scored.sort(reverse=True, key=lambda x: x[0])
-    return [e for _, e in scored[:top_n]]
+
+    # Filter by threshold but ensure at least min_results
+    filtered = [e for score, e in scored if score >= score_threshold]
+    if len(filtered) < min_results:
+        filtered = [e for _, e in scored[:max(top_n, min_results)]]
+
+    return filtered[:top_n]
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
     """Search for entries matching the query, with optional category filtering (no group)."""
