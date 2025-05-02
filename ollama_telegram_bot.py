@@ -1634,17 +1634,17 @@ async def main():
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
-        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
+#        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
     
         # Document handler for CSV upload - more permissive to handle different formats
-        application.add_handler(
+'''        application.add_handler(
             MessageHandler(
                 (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
                 filters.REPLY, 
                 handle_csv_upload
             )
-        )
+        )'''
     
         # Start health check server (if needed)
         # Note: We comment this out because the run_health_server function might not exist
