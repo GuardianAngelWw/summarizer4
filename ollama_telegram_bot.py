@@ -38,11 +38,7 @@ import logging.handlers
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import CommandHandler, CallbackQueryHandler
 # Groq API client will be imported as needed
-# Add fuzzy matching for advanced search-then-summarize (preferred: rapidfuzz)
-try:
-    from rapidfuzz import fuzz
-except ImportError:
-    raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
+# Search is now handled by SQLite FTS5 through storage
 # No need for duplicate imports as they're already defined above
 
 # Global variable for slowmode seconds (default)
@@ -701,72 +697,7 @@ def clear_all_entries(category: Optional[str] = None) -> int:
         return count if success else 0
     return 0 '''
 
-# --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
-'''
-def search_entries_advanced(
-    query: str,
-    category: Optional[str] = None,
-    top_n: int = 8,
-    min_results: int = 2,
-    score_threshold: int = 50
-) -> List[Dict[str, str]]:
-    """
-    Advanced fuzzy search in entries with keyword and full-query relevance.
-    - Tokenizes query and boosts entries matching more keywords.
-    - Allows threshold adjustment.
-    - Further boosts entries that match all words in the query.
-    - Guarantees at least min_results (if available).
-    """
-    entries = read_entries(category=category)
-    if not query:
-        return entries[:top_n]  # Return first N if no query
-
-    query = query.strip().lower()
-    # Tokenize query into keywords (words of length >= 2)
-    keywords = [word for word in re.findall(r'\w+', query) if len(word) > 1]
-    keyword_set = set(keywords)
-
-    scored = []
-    for entry in entries:
-        text = entry["text"].lower()
-        cat = entry.get("category", "").lower()
-
-        # Fuzzy scores for full query
-        score_text = fuzz.token_sort_ratio(query, text)
-        score_cat = fuzz.token_sort_ratio(query, cat)
-        score_partial_text = fuzz.partial_ratio(query, text)
-        score_partial_cat = fuzz.partial_ratio(query, cat)
-
-        # Keyword-based scoring
-        entry_words = set(re.findall(r'\w+', text + " " + cat))
-        keyword_matches = keyword_set & entry_words
-        keyword_match_count = len(keyword_matches)
-
-        # Boost if all query keywords are present
-        all_keywords_in_entry = keyword_set.issubset(entry_words)
-        keyword_boost = 10 * keyword_match_count
-        if all_keywords_in_entry and keyword_set:
-            keyword_boost += 20
-
-        # Composite score
-        composite_score = (
-            0.4 * score_text +
-            0.2 * score_cat +
-            0.2 * score_partial_text +
-            0.1 * score_partial_cat +
-            keyword_boost
-        )
-        scored.append((composite_score, entry))
-
-    # Sort by score, descending
-    scored.sort(reverse=True, key=lambda x: x[0])
-
-    # Filter by threshold but ensure at least min_results
-    filtered = [e for score, e in scored if score >= score_threshold]
-    if len(filtered) < min_results:
-        filtered = [e for _, e in scored[:max(top_n, min_results)]]
-
-    return filtered[:top_n] '''
+# Search functionality is now handled by storage.search_entries using SQLite FTS5
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
     """Search for entries matching the query, with optional category filtering (no group)."""
@@ -794,7 +725,7 @@ def get_context_for_question(question: str, category: Optional[str] = None, top_
     """
     Build context string from most relevant entries for a question.
     """
-    relevant_entries = search_entries_advanced(question, category, top_n)
+    relevant_entries = storage.search_entries(question, category, top_n)
     return "\n\n".join(
         f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}"
         for entry in relevant_entries
@@ -870,7 +801,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         prompt = build_prompt(question, context_text)
 
         # Build keywords from relevant entries for hyperlinks
-        relevant_entries = search_entries_advanced(question, top_n=8)
+        relevant_entries = storage.search_entries(question, top_n=8)
         keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
         final_answer = add_hyperlinks(answer, keywords)
@@ -1308,7 +1239,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         await load_llm()
         prompt = build_prompt(question, context_text)
-        relevant_entries = search_entries_advanced(question, top_n=8)
+        relevant_entries = storage.search_entries(question, top_n=8)
         keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
         final_answer = add_hyperlinks(answer, keywords)
