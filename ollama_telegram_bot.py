@@ -31,6 +31,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 import requests
+import json
 from flask import Flask, jsonify
 import logging.handlers
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -44,6 +45,35 @@ SLOWMODE_SECONDS = 3  # Default, can be changed via /slowmode command
 
 # Per-user per-command last called tracking (in-memory)
 _user_command_timestamps: Dict[Tuple[int, str], float] = {}
+
+# --- Add command logging decorator function ---
+def log_command(func):
+    @wraps(func)
+    async def wrapper(update, context, *args, **kwargs):
+        user = update.effective_user
+        if not user:
+            logger.warning(f"Command received with no effective_user")
+            return await func(update, context, *args, **kwargs)
+            
+        username = f"@{user.username}" if user.username else f"{user.first_name}"
+        user_id = user.id
+        command = update.message.text if update.message else "(callback)"
+        
+        logger.info(f"Command received: {command} from user {username} (ID: {user_id})")
+        
+        try:
+            return await func(update, context, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error executing command {command} from {username}: {str(e)}", exc_info=True)
+            # Try to notify the user about the error
+            try:
+                if update.message and hasattr(update.message, 'reply_text'):
+                    await update.message.reply_text(f"⚠️ Error processing your command: {str(e)}")
+            except Exception:
+                pass  # If we can't reply, just log and continue
+            raise
+            
+    return wrapper
 
 def set_slowmode(seconds: int):
     global SLOWMODE_SECONDS
@@ -321,8 +351,17 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAGSluMgY56UeAs7oGnnisCgokOt0GpVcIU"
+# Load environment variables
+load_dotenv()
+
+# Get bot token from environment variable, with a fallback for backward compatibility
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 bot_token = BOT_TOKEN
+
+# Check if token is available
+if not BOT_TOKEN:
+    logging.error("TELEGRAM_BOT_TOKEN environment variable not set. Please set it in your .env file.")
+    sys.exit(1)
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -528,4 +567,1099 @@ async def slowmode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if context.args and context.args[0].isdigit():
         seconds = int(context.args[0])
         set_slowmode(seconds)
-   
+        await update.message.reply_text(f"⏱ Slow mode set to {seconds} seconds.")
+        logger.info(f"Slow mode set to {seconds} seconds by admin {update.effective_user.id}.")
+    else:
+        await update.message.reply_text(
+            f"Usage: /slowmode <seconds>\nCurrent: {get_slowmode()} seconds.")
+
+
+def clean_telegram_html(text: str) -> str:
+    """
+    Clean/sanitize string for Telegram HTML compatibility:
+    - Replace <br>, <br/>, </br> with newlines.
+    - Remove all other unsupported tags.
+    - Optionally, collapse multiple newlines.
+    """
+    # Replace <br> and variants with newline
+    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+    text = re.sub(r'</br\s*>', '\n', text, flags=re.IGNORECASE)
+
+    # Allowed Telegram HTML tags
+    allowed = ['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','blockquote']
+    # Remove all other HTML tags except allowed
+    text = re.sub(
+        r'</?(?!' + '|'.join(allowed) + r')\b[^>]*>',
+        '',
+        text
+    )
+
+    # Collapse >2 newlines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text
+
+# ... [rest of your code remains the same, but update message sending as follows] ...
+
+async def send_csv_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
+    """Send the CSV file to the specified Telegram channel."""
+    try:
+        app = Application.builder().token(bot_token).build()
+        await app.bot.send_document(
+            chat_id=channel_id,
+            document=open(file_path, "rb"),
+            filename=os.path.basename(file_path),
+            caption="📦 Daily #backup: Current entries.csv file."
+        )
+        await app.shutdown()
+        logger.info("Successfully sent daily CSV backup to logs channel.")
+    except Exception as e:
+        logger.error(f"Error sending CSV to logs channel: {str(e)}")
+
+def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
+    """Schedule sending the CSV file to the logs channel once every day."""
+    scheduler = BackgroundScheduler(timezone="UTC")
+
+    async def send_backup():
+        await send_csv_to_logs_channel(bot_token, file_path, channel_id)
+
+    def job():
+        try:
+            asyncio.run(send_backup())
+        except Exception as e:
+            logger.error(f"Error in scheduled CSV backup: {e}")
+
+    # Schedule for once every day at 00:10 UTC (can adjust the time as needed)
+    scheduler.add_job(job, "cron", hour=0, minute=10, id="daily_csv_backup", replace_existing=True)
+    scheduler.start()
+    logger.info("Scheduled daily CSV backup to logs channel.")
+
+'''def get_categories() -> List[str]:
+    """Get the list of categories."""
+    try:
+        with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("categories", [])
+    except Exception as e:
+        logger.error(f"Error reading categories: {str(e)}")
+        return ["General"]
+        
+def add_category(category: str) -> bool:
+    """Add a new category."""
+    if not category:
+        return False
+        
+    categories = get_categories()
+    if category in categories:
+        return True
+        
+    categories.append(category)
+    try:
+        with open(CATEGORIES_FILE, "w", encoding="utf-8") as f:
+            json.dump({"categories": categories}, f)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing categories: {str(e)}")
+        return False '''
+
+'''def read_entries(category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Read entries from the CSV file with optional filtering by category only."""
+    entries = []
+    try:
+        with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Fill in missing fields
+                if "category" not in row:
+                    row["category"] = "General"
+                # Remove group_id if present from previous versions
+                row.pop("group_id", None)
+                if category is not None and row["category"] != category:
+                    continue
+                entries.append(row)
+    except Exception as e:
+        logger.error(f"Error reading entries: {str(e)}")
+    return entries
+
+def write_entries(entries: List[Dict[str, str]]) -> bool:
+    """Write entries to the CSV file (category only, no group_id)."""
+    try:
+        with open(ENTRIES_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+            writer.writeheader()
+            writer.writerows(entries)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing entries: {str(e)}")
+        return False
+
+def add_entry(text: str, link: str, category: str = "General") -> bool:
+    """Add a new entry (no group-specific logic)."""
+    entries = read_entries()
+    for entry in entries:
+        if entry["text"] == text and entry["link"] == link:
+            return False
+    add_category(category)
+    new_entry = {
+        "text": text,
+        "link": link,
+        "category": category
+    }
+    entries.append(new_entry)
+    return write_entries(entries)
+
+def delete_entry(index: int) -> bool:
+    """Delete an entry from the CSV file."""
+    entries = read_entries()
+    if 0 <= index < len(entries):
+        entries.pop(index)
+        return write_entries(entries)
+    return False
+
+def clear_all_entries(category: Optional[str] = None) -> int:
+    """Clear all entries, optionally filtered by category only."""
+    all_entries = read_entries()
+    if category is None:
+        count = len(all_entries)
+        return count if write_entries([]) else 0
+    entries_to_keep = []
+    count = 0
+    for entry in all_entries:
+        if entry["category"] != category:
+            entries_to_keep.append(entry)
+        else:
+            count += 1
+    if count > 0:
+        success = write_entries(entries_to_keep)
+        return count if success else 0
+    return 0 '''
+
+# Search functionality is now handled by storage.search_entries using SQLite FTS5
+
+def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Search for entries matching the query, with optional category filtering (no group)."""
+    entries = read_entries(category=category)
+    if not query:
+        return entries
+    query = query.lower()
+    return [entry for entry in entries if 
+            query in entry["text"].lower() or 
+            query in entry.get("category", "").lower()]
+
+# Updated load_llm function to use Groq API
+async def load_llm():
+    try:
+        logger.info(f"Using Groq API with model: {CURRENT_AI_MODEL}")
+        if not CURRENT_AI_API_KEY:
+            logger.error("AI API key is not set. Please set it with /setapikey.")
+            raise ValueError("AI API key is required")
+        return {"groq_client": True}
+    except Exception as e:
+        logger.error(f"Error initializing Groq client: {str(e)}")
+        raise
+
+def get_context_for_question(question: str, category: Optional[str] = None, top_n: int = 8) -> str:
+    """
+    Build context string from most relevant entries for a question.
+    """
+    relevant_entries = storage.search_entries(question, category, top_n)
+    return "\n\n".join(
+        f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}"
+        for entry in relevant_entries
+    )
+
+# Command Handlers
+@log_command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send a message when the command /start is issued."""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+    is_user_admin = await is_admin(context, chat_id, user.id)
+    
+    help_text = (
+        f"👋 Hi {user.mention_html()}! I'm here to help you.\n\n"
+        "Available commands:\n"
+        "/ask &lt;your question &gt; - Ask a question about wolfblood and networks\n"
+        "/here &lt;your question &gt; - Ask a question (when replying to someone)\n"
+    )
+    
+#    if is_user_admin:
+#       admin_text = (
+#            "/list - List knowledge entries (admin only)\n"
+#            "/add \"entry text\" \"message_link\" \"category\" - Add a new entry\n"
+#            "/download - Download the current CSV file\n"
+#            "/upload - Upload a CSV file\n"
+#            "/clear - Clear all entries or entries in a specific category\n"
+#        )
+#        help_text += admin_text
+    
+ #   help_text += "\nUse categories to organize your knowledge entries."
+    await update.message.reply_html(help_text)
+
+@rate_limit()
+@log_command
+async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Answer a question using the LLM but reply to the person being replied to and delete the command."""
+    # Check if this message is a reply
+    if update.message.reply_to_message is None:
+        await update.message.reply_text("This command must be used as a reply to another message.")
+        return
+    
+    # Get the question from the command text
+    command_text = update.message.text
+    question = command_text[5:].strip()  # Remove "/here "
+    
+    if not question:
+        await update.message.reply_text(
+            "Please provide a question after the /here command. For example:\n"
+            "/here What are some betrayal cases in wolfblood?"
+        )
+        return
+    
+    # Get the message this is replying to
+    replied_msg = update.message.reply_to_message
+    replied_user = replied_msg.from_user
+    
+    # Send initial thinking message
+    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
+    
+    context_text = get_context_for_question(question, top_n=8)
+    if not context_text.strip():
+        await thinking_message.delete()
+        await replied_msg.reply_text(
+            f"{replied_user.mention_html()}, no knowledge entries found to answer your question.", 
+            parse_mode=ParseMode.HTML
+        )
+        await update.message.delete()
+        return
+
+    try:
+        await thinking_message.edit_text("🤔")
+        await load_llm()
+        await thinking_message.edit_text("⚡")
+        prompt = build_prompt(question, context_text)
+
+        # Build keywords from relevant entries for hyperlinks
+        relevant_entries = storage.search_entries(question, top_n=8)
+        keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
+        answer = await generate_response(prompt, None, None)
+        final_answer = add_hyperlinks(answer, keywords)
+
+        await thinking_message.delete()
+        if len(final_answer) > 4000:
+            final_answer = final_answer[:3900] + "\n\n... (message truncated due to length)"
+        try:
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()} 👇 {clean_telegram_html(final_answer)}",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            await replied_msg.reply_text(
+                f"{replied_user.mention_html()}, fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!",
+                parse_mode=ParseMode.HTML
+            )
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error generating LLM response: {str(e)}")
+        await thinking_message.delete()
+        await replied_msg.reply_text(
+            f"{replied_user.mention_html()}, sorry, I encountered an error while processing your question.\n"
+            f"Error: {str(e)[:100]}...",
+            parse_mode=ParseMode.HTML
+        )
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {str(e)}")
+
+# Add the logs command handler
+@admin_only
+@log_command
+async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the last 10 log entries to the chat."""
+    if not last_logs:
+        await update.message.reply_text("No logs available.")
+        return
+
+    # Format logs for display
+    log_text = "📋 Last 10 log entries:\n\n"
+    for log in last_logs:
+        log_text += f"{log}\n"
+
+    # Split message if it's too long
+    if len(log_text) > 4000:  # Telegram message limit is 4096 characters
+        parts = [log_text[i:i+4000] for i in range(0, len(log_text), 4000)]
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(log_text)
+
+# Add custom error handler to exclude sensitive data
+def format_error_for_user(error: Exception) -> str:
+    """Format error message for user, excluding sensitive information."""
+    error_str = str(error)
+    # List of patterns to remove/replace
+    sensitive_patterns = [
+        (r'token=[a-zA-Z0-9:_-]+', 'token=<REDACTED>'),
+        (r'api_key=[a-zA-Z0-9_-]+', 'api_key=<REDACTED>'),
+        (r'password=[a-zA-Z0-9@#$%^&*]+', 'password=<REDACTED>'),
+        (r'BOT_TOKEN=[a-zA-Z0-9:_-]+', 'BOT_TOKEN=<REDACTED>')
+    ]
+    
+    for pattern, replacement in sensitive_patterns:
+        error_str = re.sub(pattern, replacement, error_str)
+    return error_str
+
+@admin_only
+async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text[5:].strip()
+    match = re.match(r'"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
+    if not match:
+        await update.message.reply_text(
+            "Please use the format: /add \"entry text\" \"message_link\" \"optional_category\""
+        )
+        return
+    match_groups = match.groups()
+    entry_text = match_groups[0]
+    link = match_groups[1]
+    category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
+    if storage.add_entry(entry_text, link, category):
+        await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
+    else:
+        await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
+
+@admin_only
+async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args if context.args else []
+    query = ""
+    category = None
+    for arg in args:
+        if arg.startswith("category="):
+            category = arg.split("=")[1] if len(arg.split("=")) > 1 else None
+        else:
+            query = arg
+    page = int(context.user_data.get('page', 0))
+    entries = storage.get_entries(category)
+    total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
+    start_idx = page * ENTRIES_PER_PAGE
+    end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
+    if not entries:
+        message = "No entries found."
+        if category:
+            message += f" in category '{category}'"
+        if query:
+            message += f" matching '{query}'"
+        await update.message.reply_text(message)
+        return
+    message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
+    if category:
+        message += f" in category '{category}'"
+    if query:
+        message += f" matching '{query}'"
+    message += ":\n\n"
+    for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
+        message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
+        message += f"   🔗 {entry['link']}\n\n"
+    
+    # Create navigation buttons
+    keyboard = []
+    
+    # Add category filter buttons
+    categories = get_categories()
+    category_buttons = []
+    for cat in categories[:3]:  # Limit to 3 buttons per row
+        category_buttons.append(InlineKeyboardButton(
+            f"📂 {cat}", 
+            callback_data=f"cat:{cat}"
+        ))
+    
+    if category_buttons:
+        keyboard.append(category_buttons)
+    
+    # Add navigation buttons
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
+    
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
+    
+    if nav_row:
+        keyboard.append(nav_row)
+    
+    # Add delete buttons
+    for i in range(start_idx, end_idx):
+        keyboard.append([InlineKeyboardButton(
+            f"🗑️ Delete #{i+1}", 
+            callback_data=f"delete:{i}"
+        )])
+    
+    # Add clear all button if there are entries
+    if entries:
+        clear_text = "Clear All"
+        if category:
+            clear_text = f"Clear '{category}' Entries"
+        keyboard.append([InlineKeyboardButton(
+            f"🗑️ {clear_text}", 
+            callback_data=f"clear:{category or 'all'}"
+        )])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    # Store the current page and category in user data
+    context.user_data['page'] = page
+    context.user_data['category'] = category
+    
+    # ********** PATCH STARTS HERE **********
+    # Telegram message limit is 4096, use 4000 as a safe limit for buttons, etc.
+    MAX_LEN = 4000
+    if len(message) > MAX_LEN:
+        logger.warning("Entry list message too long, splitting into multiple messages.")
+        # Split at 4000 chars, but try not to break in the middle of a line
+        lines = message.split('\n')
+        chunk = ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > MAX_LEN:
+                await update.message.reply_text(chunk, reply_markup=reply_markup)
+                chunk = ""
+            chunk += line + '\n'
+        if chunk:
+            await update.message.reply_text(chunk, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(message, reply_markup=reply_markup)
+    # ********** PATCH ENDS HERE **********
+
+# Update the handle_pagination function to check for admin permissions (around line 557)
+async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pagination callbacks and other inline button actions."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Always verify admin permissions first
+    data = query.data
+
+    # Only restrict certain actions to admins
+    if data.startswith(("delete:", "clear:", "confirm_clear:")):
+        is_user_admin = await is_admin(context, chat_id, user_id)
+        if not is_user_admin:
+            await query.answer("Sorry, only admins can use these controls.", show_alert=True)
+            return
+
+    await query.answer()
+    
+    if data.startswith("cat:"):
+        category = data.split(":")[1]
+        context.user_data['page'] = 0
+        context.user_data['category'] = category
+        fake_update = Update(update.update_id, message=update.effective_message)
+        await list_entries(fake_update, context)
+        return
+    if data.startswith("page:"):
+        parts = data.split(":")
+        page = int(parts[1])
+        category = parts[2] if len(parts) > 2 and parts[2] else None
+        context.user_data['page'] = page
+        entries = read_entries(category)
+        
+        # Calculate pagination
+        total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
+        start_idx = page * ENTRIES_PER_PAGE
+        end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
+        
+        # Build header message
+        message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
+        if category:
+            message += f" in category '{category}'"
+        message += ":\n\n"
+        
+        # Add entries to message with length limit check
+        message_len = len(message)
+        max_len = 3800  # Leave room for markup and footer
+        
+        for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
+            entry_text = entry.get('text', '').strip()
+            category_text = entry.get('category', 'General')
+            link_text = entry.get('link', '').strip()
+            
+            # Truncate entry text if it's too long
+            if len(entry_text) > 100:
+                entry_text = entry_text[:97] + "..."
+                
+            # Truncate link if it's too long
+            if len(link_text) > 60:
+                link_text = link_text[:57] + "..."
+                
+            entry_message = f"{i}. [{category_text}] {entry_text}\n   🔗 {link_text}\n\n"
+            
+            # Check if adding this entry would exceed message length
+            if message_len + len(entry_message) > max_len:
+                message += "\n(Some entries truncated due to message length limit)"
+                break
+                
+            message += entry_message
+            message_len += len(entry_message)
+        
+        # Create navigation buttons
+        keyboard = []
+        
+        # Add category filter buttons (only for admins)
+        categories = get_categories()
+        category_buttons = []
+        for cat in categories[:3]:  # Limit to 3 buttons per row
+            category_buttons.append(InlineKeyboardButton(
+                f"📂 {cat}", 
+                callback_data=f"cat:{cat}"
+            ))
+        
+        if category_buttons:
+            keyboard.append(category_buttons)
+        
+        # Add navigation buttons
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
+        
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
+        
+        if nav_row:
+            keyboard.append(nav_row)
+        
+        # Add delete buttons (only shown to admins)
+        for i in range(start_idx, end_idx):
+            keyboard.append([InlineKeyboardButton(
+                f"🗑️ Delete #{i+1}", 
+                callback_data=f"delete:{i}"
+            )])
+        
+        # Add clear all button if there are entries (only shown to admins)
+        if entries:
+            clear_text = "Clear All"
+            if category:
+                clear_text = f"Clear '{category}' Entries"
+            keyboard.append([InlineKeyboardButton(
+                f"🗑️ {clear_text}", 
+                callback_data=f"clear:{category or 'all'}"
+            )])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
+        # Update message with error handling
+        try:
+            await query.edit_message_text(message, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Error updating message: {str(e)}")
+            # If message is too long, try with a simpler message
+            try:
+                simple_message = f"📚 Showing entries for {category or 'all categories'}\n(Message simplified due to length issues)"
+                await query.edit_message_text(simple_message, reply_markup=reply_markup)
+            except Exception as e2:
+                logger.error(f"Failed to send simplified message: {str(e2)}")
+        return
+
+    elif data.startswith("delete:"):
+        index = int(data.split(":")[1])
+        if delete_entry(index):
+            await query.edit_message_text(f"✅ Entry #{index+1} deleted successfully.")
+        else:
+            await query.edit_message_text(f"❌ Failed to delete entry #{index+1}.")
+    elif data.startswith("clear:"):
+        category_filter = data.split(":")[1]
+        category = None if category_filter == 'all' else category_filter
+        confirm_text = "Are you sure you want to clear "
+        if category:
+            confirm_text += f"all entries in category '{category}'?"
+        else:
+            confirm_text += "ALL entries?"
+        keyboard = [
+            [
+                InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
+                InlineKeyboardButton("Cancel", callback_data="cancel_clear")
+            ]
+        ]
+        await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("confirm_clear:"):
+        category_filter = data.split(":")[1]
+        category = None if category_filter == 'all' else category_filter
+        count = clear_all_entries(category)
+        if count > 0:
+            await query.edit_message_text(f"✅ Successfully cleared {count} entries.")
+        else:
+            await query.edit_message_text("❌ No entries were cleared or an error occurred.")
+    elif data == "cancel_clear":
+        await query.edit_message_text("Operation cancelled.")
+
+# Helper functions for ask_question
+def build_prompt(question: str, context_text: str) -> str:
+    return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
+    - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
+    - **NEVER** send what you're **thinking** just send the processed output mentioned as below.
+    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
+    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
+    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
+    - **MUST** read the whole question so every word of the question makes sense in the output.
+    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
+    - **NEVER** reply out-of-context or out of entries questions.
+
+    Question: {question}
+
+    Knowledge Base:
+    {context_text}"""
+
+
+def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
+    """
+    Replace keywords with Telegram HTML links in the answer.
+
+    :param answer: The generated answer text.
+    :param keywords: A dictionary of keywords and their corresponding URLs.
+    :return: Updated answer with hyperlinks.
+    """
+    def escape_html(text):
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+        )
+
+    for word, url in keywords.items():
+        # Escape HTML in the word and URL
+        safe_word = escape_html(word)
+        safe_url = escape_html(url)
+        # Replace only the full word with the hyperlink (HTML)
+        answer = re.sub(
+            rf"(?<!\w)({re.escape(word)})(?!\w)",
+            f'<a href="{safe_url}">{safe_word}</a>',
+            answer
+        )
+    return answer
+
+async def generate_response(prompt: str, _, __=None) -> str:
+    try:
+        logger.info("Sending request to Groq API...")
+        import groq
+        client = groq.AsyncGroq(api_key=CURRENT_AI_API_KEY)
+        chat_completion = await client.chat.completions.create(
+            model=CURRENT_AI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=800,
+            top_p=0.95
+        )
+        answer = chat_completion.choices[0].message.content
+        logger.info("Received response from Groq API")
+        return answer.strip()
+    except Exception as e:
+        logger.error(f"Error in generate_response: {str(e)}")
+        raise RuntimeError(f"Failed to generate response: {str(e)}")
+
+@rate_limit()
+@log_command
+async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    question = " ".join(context.args)
+    if not question:
+        await update.message.reply_text(
+            "Please provide a question after the /ask command. For example:\n"
+            "/ask Whose birthdays are in the month of April?"
+        )
+        return
+    thinking_message = await update.message.reply_text("💣")
+    # PATCH: Use search-then-summarize for context
+    context_text = get_context_for_question(question, top_n=8)
+    if not context_text.strip():
+        await thinking_message.delete()
+        await update.message.reply_text("No knowledge entries found to answer your question.")
+        return
+    try:
+        await load_llm()
+        prompt = build_prompt(question, context_text)
+        relevant_entries = storage.search_entries(question, top_n=8)
+        keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
+        answer = await generate_response(prompt, None, None)
+        final_answer = add_hyperlinks(answer, keywords)
+        output = f"{final_answer}"
+        await thinking_message.delete()
+        if len(output) > 4000:
+            output = output[:3900] + "\n\n... (message truncated due to length)"
+        try:
+            await update.message.reply_html(
+                clean_telegram_html(output),
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            await update.message.reply_text(
+                "fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!"
+            )
+    except Exception as e:
+        logger.error(f"Error generating response: {str(e)}")
+        await thinking_message.delete()
+        await update.message.reply_text("An error occurred while processing your question.")
+                                        
+@admin_only
+async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    category = None
+    if context.args:
+        category = " ".join(context.args)
+    confirm_text = "Are you sure you want to clear "
+    if category:
+        confirm_text += f"all entries in category '{category}'?"
+    else:
+        confirm_text += "ALL entries?"
+    keyboard = [
+        [
+            InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
+            InlineKeyboardButton("Cancel", callback_data="cancel_clear")
+        ]
+    ]
+    await update.message.reply_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+@admin_only
+async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not os.path.exists(ENTRIES_FILE):
+        await update.message.reply_text("No entries file exists yet.")
+        return
+    await update.message.reply_document(
+        document=open(ENTRIES_FILE, "rb"),
+        filename="entries.csv",
+        caption="Here's your complete knowledge base CSV file."
+    )
+
+@admin_only
+async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Request the user to upload a CSV file."""
+    categories = get_categories()
+    category_list = ", ".join(categories)
+    
+    await update.message.reply_text(
+        "Please upload your CSV file as a reply to this message.\n\n"
+        f"The file should have these columns: 'text', 'link', 'category', 'group_id'\n\n"
+        f"Available categories: {category_list}\n\n"
+        "If you're adding entries for this group, leave group_id empty."
+    )
+    # Set the expected state
+    context.user_data["awaiting_csv"] = True
+
+@admin_only
+async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.reply_to_message and update.message.document:
+        context.user_data["awaiting_csv"] = True
+    if not context.user_data.get("awaiting_csv"):
+        return
+    context.user_data["awaiting_csv"] = False
+    if not update.message.document:
+        await update.message.reply_text("Please upload a CSV file.")
+        return
+    document = update.message.document
+    file_name = document.file_name.lower() if document.file_name else "unnamed.file"
+    uploaded_entries = []
+    processing_status = await update.message.reply_text("⏳ Processing your uploaded file...")
+    try:
+        file = await context.bot.get_file(document.file_id)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
+            await file.download_to_drive(temp_file.name)
+            file_path = temp_file.name
+        file_content = ""
+        rows_parsed = []
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                file_content = f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    file_content = f.read()
+            except Exception as e:
+                await processing_status.edit_text(f"Error reading file: {str(e)}")
+                return
+        if not any(separator in file_content for separator in [",", "\t", ";"]):
+            await processing_status.edit_text(
+                "The uploaded file doesn't appear to be in CSV format. Expected comma, tab, or semicolon delimiters."
+            )
+            return
+        for delimiter in [",", "\t", ";"]:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f, delimiter=delimiter)
+                    if not reader.fieldnames:
+                        continue
+                    required_headers = ["text", "link"]
+                    if all(header in reader.fieldnames for header in required_headers):
+                        rows_parsed = list(reader)
+                        await processing_status.edit_text(f"✅ Found CSV format with {delimiter} delimiter")
+                        break
+            except Exception as e:
+                logger.info(f"Parsing with delimiter {delimiter} failed: {str(e)}")
+                continue
+        if not rows_parsed:
+            await processing_status.edit_text(
+                "Could not find required 'text' and 'link' columns in the CSV. "
+                "Please check the file format and try again."
+            )
+            return
+        # Process the successfully parsed rows
+        for i, row in enumerate(rows_parsed, 1):
+            try:
+                text = row.get("text", "").strip()
+                link = row.get("link", "").strip()
+                if not text or not link:
+                    logger.warning(f"Skipping row {i}: Missing required text or link field")
+                    continue
+                new_entry = {
+                    "text": text,
+                    "link": link,
+                    "category": row.get("category", "General").strip() or "General"
+                }
+                uploaded_entries.append(new_entry)
+            except Exception as row_error:
+                logger.error(f"Error processing row {i}: {str(row_error)}")
+        try:
+            os.unlink(file_path)
+        except Exception as e:
+            logger.error(f"Error cleaning up temp file: {str(e)}")
+        if not uploaded_entries:
+            await processing_status.edit_text("No valid entries found in the CSV file.")
+            return
+        await processing_status.delete()
+        message = f"✅ Found {len(uploaded_entries)} valid entries in the CSV file. Do you want to:"
+        keyboard = [
+            [
+                InlineKeyboardButton("Replace All", callback_data="csv:replace"),
+                InlineKeyboardButton("Append", callback_data="csv:append"),
+            ],
+            [InlineKeyboardButton("Cancel", callback_data="csv:cancel")]
+        ]
+        context.user_data["uploaded_entries"] = uploaded_entries
+        await update.message.reply_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        logger.error(f"Error processing CSV upload: {str(e)}")
+        try:
+            await processing_status.delete()
+        except:
+            pass
+        await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
+
+async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split(":", 1)[1]
+    if action == "cancel":
+        await query.edit_message_text("CSV import canceled.")
+        return
+    uploaded_entries = context.user_data.get("uploaded_entries", [])
+    if not uploaded_entries:
+        await query.edit_message_text("No entries to process.")
+        return
+    try:
+        if action == "replace":
+            success = write_entries(uploaded_entries)
+            message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
+        elif action == "append":
+            current_entries = read_entries()
+            new_entries = []
+            existing_count = 0
+            for entry in uploaded_entries:
+                is_duplicate = False
+                for existing in current_entries:
+                    if (existing["text"] == entry["text"] and 
+                        existing["link"] == entry["link"]):
+                        is_duplicate = True
+                        existing_count += 1
+                        break
+                if not is_duplicate:
+                    new_entries.append(entry)
+            combined_entries = current_entries + new_entries
+            success = write_entries(combined_entries)
+            message = f"✅ Added {len(new_entries)} new entries (skipped {existing_count} duplicates)." if success else "❌ Failed to update entries."
+        await query.edit_message_text(message)
+    except Exception as e:
+        logger.error(f"Error handling CSV action: {str(e)}")
+        await query.edit_message_text(f"Error: {str(e)}")
+
+# Modify your main function to use the status monitor
+async def main():
+    """Start the bot."""
+    # Load environment variables
+    load_dotenv()
+    
+    # Enhanced logging at startup
+    logger.info("================ BOT STARTUP =================")
+    logger.info(f"Starting bot at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    
+    # Initialize bot token and admin IDs
+    bot_token = BOT_TOKEN
+    logger.info(f"Bot token length: {len(bot_token) if bot_token else 'Token not found'}")
+    
+    # Validate bot token format
+    if not bot_token or ":" not in bot_token:
+        logger.error(f"Invalid bot token format. Token should contain ':' character. Please check your BOT_TOKEN.")
+        raise ValueError("Invalid bot token format")
+        
+    # Test bot token with a simple getMe API call
+    try:
+        logger.info("Testing bot token with getMe API call...")
+        response = requests.get(f"https://api.telegram.org/bot{bot_token}/getMe")
+        if response.status_code != 200:
+            error_data = response.json()
+            logger.error(f"Bot token validation failed: {error_data}")
+            raise ValueError(f"Invalid bot token: {error_data.get('description', 'Unknown error')}")
+        bot_info = response.json().get('result', {})
+        logger.info(f"Bot token validated successfully! Connected as @{bot_info.get('username')}")
+    except Exception as e:
+        logger.error(f"Error validating bot token: {str(e)}")
+        raise ValueError(f"Failed to validate bot token: {str(e)}")
+        
+    admin_ids = [int(id.strip()) for id in os.getenv("ADMIN_USER_IDS", "").split(",") if id.strip()]
+    logger.info(f"Admin IDs configured: {admin_ids}")
+    
+    # Initialize status monitor
+    status_monitor = BotStatusMonitor(bot_token, admin_ids)
+    # Schedule the daily backup of the entries CSV to the logs channel
+    schedule_daily_csv_backup(
+        bot_token=bot_token,
+        file_path=ENTRIES_FILE,
+        channel_id=-1001925908750
+    )
+    
+    # Send startup notification
+    await status_monitor.send_startup_notification()
+    
+    try:
+        # Initialize your application
+        # Create application with detailed logging
+        logger.info("Creating Application instance with the provided token...")
+        try:
+            application = Application.builder().token(bot_token).build()
+            logger.info("Application instance created successfully")
+        except Exception as e:
+            logger.critical(f"Failed to create Application instance: {e}", exc_info=True)
+            raise ValueError(f"Invalid bot configuration: {str(e)}")
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        # ... other handlers ...
+        # Standard command handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", start))
+        application.add_handler(CommandHandler("setmodel", set_model_command))   # <--- PATCH: Add this line
+        application.add_handler(CommandHandler("setapikey", set_apikey_command)) # <--- PATCH: Add this line
+        application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
+        application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
+        application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
+        application.add_handler(CommandHandler("download", download_csv))  # Admin-only
+        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
+        application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
+        application.add_handler(CommandHandler("here", here_command))  # Available to all users
+        application.add_handler(CommandHandler("logs", show_logs))  # New logs command
+        application.add_handler(CommandHandler("s", show_entry_command))
+        application.add_handler(CommandHandler("i", insert_entry_command))
+        application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
+        # Enhanced callback query handlers
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cat:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
+        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
+        application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
+    
+        # Document handler for CSV upload - more permissive to handle different formats
+        application.add_handler(
+            MessageHandler(
+                (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
+                filters.REPLY, 
+                handle_csv_upload
+            )
+        )
+    
+        # Start health check server (if needed)
+        # Note: We comment this out because the run_health_server function might not exist
+        # health_thread = threading.Thread(target=run_health_server, daemon=True)
+        # health_thread.start()
+        
+        # Schedule periodic health checks
+        async def periodic_health_check():
+            while True:
+                await status_monitor.send_health_check()
+                await asyncio.sleep(3600)  # Check every hour
+        
+        # Create the health check task
+        health_check_task = asyncio.create_task(periodic_health_check())
+        
+        # Run the bot (only run once)
+        logger.info("Starting bot polling...")
+        try:
+            # Configure telegram bot with more detailed logging
+            application.bot._http.logger.setLevel(logging.INFO)
+            # Enable debug mode in telegram bot api
+            application.bot._log = True
+            # Detailed logging of telegram updates
+            logger.info(f"Bot will listen for the following update types: {Update.ALL_TYPES}")
+            logger.info(f"Bot username: {application.bot.username}, Bot ID: {application.bot.id}")
+            
+            # Start polling with aggressive settings to ensure we get updates
+            await application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                poll_interval=1.0,  # Check for updates every second
+                timeout=30,  # Longer timeout for API requests
+                read_timeout=30,
+                write_timeout=30,
+                connect_timeout=30
+            )
+        except Exception as e:
+            logger.critical(f"Error in run_polling: {e}", exc_info=True)
+            raise
+    except Exception as e:
+        # Send shutdown notification with error
+        await status_monitor.send_shutdown_notification(f"Error: {str(e)}")
+        raise
+    finally:
+        # Send shutdown notification
+        await status_monitor.send_shutdown_notification()
+
+
+if __name__ == "__main__":
+    # Since we're using nest_asyncio, we can run both Flask and the Telegram bot
+    import threading
+    import asyncio
+    
+    def start_flask():
+        try:
+            # Try to use waitress for production deployment
+            try:
+                from waitress import serve
+                logger.info("Starting Flask server with waitress on port 8081")
+                serve(app, host="0.0.0.0", port=8081)
+            except ImportError:
+                # Fallback to Flask's built-in server
+                logger.info("Waitress not available, using Flask's built-in server on port 8081")
+                app.run(host="0.0.0.0", port=8081, debug=False)
+        except Exception as e:
+            logger.error(f"Failed to start Flask server: {e}")
+    
+    # Start Flask in a background thread
+    flask_thread = threading.Thread(target=start_flask)
+    flask_thread.daemon = True  # Thread will exit when main thread exits
+    flask_thread.start()
+    
+    # Start the Telegram bot in the main thread
+    logger.info("Starting Summarizer2 Telegram Bot")
+    try:
+        # With nest_asyncio.apply() already called, we can use asyncio.run safely
+        logger.info("Initializing main event loop")
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by keyboard interrupt (Ctrl+C)")
+    except Exception as e:
+        logger.critical(f"Critical error in main process: {e}", exc_info=True)
+        # Print stacktrace for easier debugging
+        import traceback
+        traceback.print_exc()
