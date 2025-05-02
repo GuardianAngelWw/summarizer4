@@ -31,7 +31,6 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode, ChatType
 import requests
-import jsonfify
 from flask import Flask, jsonify
 import logging.handlers
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
