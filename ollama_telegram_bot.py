@@ -487,6 +487,68 @@ def admin_only(func):
     return wrapped
 
 @admin_only
+async def download_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    db_path = "entries.db"
+    if not os.path.exists(db_path):
+        await update.message.reply_text("No entries database found.")
+        return
+    await update.message.reply_document(
+        document=open(db_path, "rb"),
+        filename="entries.db",
+        caption="Here's your complete knowledge base database file."
+    )
+
+@admin_only
+async def handle_db_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message.document:
+        await update.message.reply_text("Please upload an SQLite database file (.db).")
+        return
+    document = update.message.document
+    if not document.file_name.lower().endswith(".db"):
+        await update.message.reply_text("Please upload a file ending with .db")
+        return
+    file = await context.bot.get_file(document.file_id)
+    db_path = "entries.db"
+    temp_path = db_path + ".upload"
+    await file.download_to_drive(temp_path)
+    try:
+        os.replace(temp_path, db_path)
+        await update.message.reply_text("✅ Database file replaced successfully. Please /restart the bot if you want changes to take effect.")
+    except Exception as e:
+        await update.message.reply_text(f"Error replacing database: {str(e)}")
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+async def send_db_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
+    """Send the SQLite DB file to the specified Telegram channel."""
+    try:
+        app = Application.builder().token(bot_token).build()
+        await app.bot.send_document(
+            chat_id=channel_id,
+            document=open(file_path, "rb"),
+            filename=os.path.basename(file_path),
+            caption="📦 Daily #backup: Current entries.db file."
+        )
+        await app.shutdown()
+        logger.info("Successfully sent daily DB backup to logs channel.")
+    except Exception as e:
+        logger.error(f"Error sending DB to logs channel: {str(e)}")
+
+def schedule_daily_db_backup(bot_token: str, file_path: str, channel_id: int):
+    """Schedule sending the DB file to the logs channel once every day."""
+    scheduler = BackgroundScheduler(timezone="UTC")
+    async def send_backup():
+        await send_db_to_logs_channel(bot_token, file_path, channel_id)
+    def job():
+        try:
+            asyncio.run(send_backup())
+        except Exception as e:
+            logger.error(f"Error in scheduled DB backup: {e}")
+    scheduler.add_job(job, "cron", hour=0, minute=10, id="daily_db_backup", replace_existing=True)
+    scheduler.start()
+    logger.info("Scheduled daily DB backup to logs channel.")
+
+@admin_only
 async def insert_entry_command(update, context):
     text = update.message.text
     match = re.match(r'/i\s+(\d+)\s+"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
@@ -1521,9 +1583,9 @@ async def main():
     # Initialize status monitor
     status_monitor = BotStatusMonitor(bot_token, admin_ids)
     # Schedule the daily backup of the entries CSV to the logs channel
-    schedule_daily_csv_backup(
+    schedule_daily_db_backup(
         bot_token=bot_token,
-        file_path=ENTRIES_FILE,
+        file_path="entries.db",
         channel_id=-1001925908750
     )
     
@@ -1553,13 +1615,18 @@ async def main():
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
         application.add_handler(CommandHandler("download", download_csv))  # Admin-only
-        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
+#        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
         application.add_handler(CommandHandler("here", here_command))  # Available to all users
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
         application.add_handler(CommandHandler("s", show_entry_command))
         application.add_handler(CommandHandler("i", insert_entry_command))
         application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
+        application.add_handler(CommandHandler("download_db", download_db))
+        application.add_handler(MessageHandler(
+            filters.Document.FileExtension(".db") & filters.REPLY,
+            handle_db_upload
+        ))
         # Enhanced callback query handlers
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
