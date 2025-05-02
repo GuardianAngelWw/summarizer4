@@ -1,7 +1,6 @@
 import os
 import csv
 import sys
-from storage import EntryStorage
 import asyncio
 import logging
 import re
