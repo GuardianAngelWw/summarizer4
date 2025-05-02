@@ -33,6 +33,8 @@ import requests
 import json
 from flask import Flask, jsonify
 import logging.handlers
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import CommandHandler, CallbackQueryHandler
 # Groq API client will be imported as needed
 # Add fuzzy matching for advanced search-then-summarize (preferred: rapidfuzz)
 try:
@@ -165,7 +167,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAEnsdd9byWO2m8u2HoYtS5UmTOlXIX5DQM"
+BOT_TOKEN = "6614402193:AAGXg-AS9xZV8A7n6SHL0Wy2-dOstLu8FdI"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -256,6 +258,67 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
         logger.error(f"Error checking admin status: {str(e)}")
         return False
 
+def admin_only(func):
+    """Decorator to restrict command access to admin users only"""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Check if user is an admin
+        if not await is_admin(context, chat_id, user_id):
+            await update.message.reply_text("Sorry, this command is restricted to admins only.")
+            return
+            
+        return await func(update, context, *args, **kwargs)
+    return wrapped
+
+@admin_only  # Remove this decorator if you want all users to use /s
+async def show_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the full details of a specific entry by index, with a delete button."""
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /s <entry_number>\nExample: /s 4")
+        return
+    idx = int(args[0]) - 1  # Convert to zero-based index
+    entries = read_entries()
+    if idx < 0 or idx >= len(entries):
+        await update.message.reply_text(f"Entry #{args[0]} does not exist. There are {len(entries)} entries.")
+        return
+    entry = entries[idx]
+    msg = (
+        f"<b>Entry #{idx+1}</b>\n"
+        f"<b>Category:</b> {entry.get('category', 'General')}\n"
+        f"<b>Text:</b>\n<blockquote>{entry['text']}</blockquote>\n"
+        f"<b>Link:</b> <a href='{entry['link']}'>{entry['link']}</a>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ Delete", callback_data=f"sdelete:{idx}")]
+    ])
+    await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
+
+@admin_only  # Only allow admins to delete
+async def handle_single_entry_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the delete button for a specific entry shown via /s."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    data = query.data
+    idx = int(data.split(":", 1)[1])
+    entries = read_entries()
+    if idx < 0 or idx >= len(entries):
+        await query.answer("Entry does not exist.", show_alert=True)
+        return
+    entry = entries[idx]
+    # Delete the entry
+    if delete_entry(idx):
+        await query.edit_message_text(
+            f"✅ Entry #{idx+1} deleted successfully.\n\n"
+            f"Category: {entry.get('category', 'General')}\n"
+            f"Text: {entry['text'][:60]}{'...' if len(entry['text']) > 60 else ''}"
+        )
+    else:
+        await query.answer("Failed to delete entry.", show_alert=True)
+
 def clean_telegram_html(text: str) -> str:
     """
     Clean/sanitize string for Telegram HTML compatibility:
@@ -315,22 +378,6 @@ def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
     scheduler.add_job(job, "cron", hour=0, minute=10, id="daily_csv_backup", replace_existing=True)
     scheduler.start()
     logger.info("Scheduled daily CSV backup to logs channel.")
-
-        
-def admin_only(func):
-    """Decorator to restrict command access to admin users only"""
-    @wraps(func)
-    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
-        
-        # Check if user is an admin
-        if not await is_admin(context, chat_id, user_id):
-            await update.message.reply_text("Sorry, this command is restricted to admins only.")
-            return
-            
-        return await func(update, context, *args, **kwargs)
-    return wrapped
 
 def get_categories() -> List[str]:
     """Get the list of categories."""
@@ -973,6 +1020,7 @@ def build_prompt(question: str, context_text: str) -> str:
     Knowledge Base:
     {context_text}"""
 
+
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
     Replace keywords with Telegram HTML links in the answer.
@@ -1289,7 +1337,7 @@ async def main():
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
         application.add_handler(CommandHandler("here", here_command))  # Available to all users
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
-    
+        application.add_handler(CommandHandler("s", show_entry_command))
         # Enhanced callback query handlers
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
@@ -1298,6 +1346,7 @@ async def main():
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
         application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
+        application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
     
         # Document handler for CSV upload - more permissive to handle different formats
         application.add_handler(
