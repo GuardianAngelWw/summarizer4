@@ -970,7 +970,7 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     keyboard = []
     
     # Add category filter buttons
-    categories = get_categories()
+    categories = storage.get_categories()
     category_buttons = []
     for cat in categories[:3]:  # Limit to 3 buttons per row
         category_buttons.append(InlineKeyboardButton(
@@ -1109,7 +1109,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard = []
         
         # Add category filter buttons (only for admins)
-        categories = get_categories()
+        categories = storage.get_categories()
         category_buttons = []
         for cat in categories[:3]:  # Limit to 3 buttons per row
             category_buttons.append(InlineKeyboardButton(
@@ -1335,7 +1335,7 @@ async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 @admin_only
 async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Request the user to upload a CSV file."""
-    categories = get_categories()
+    categories = storage.get_categories()
     category_list = ", ".join(categories)
     
     await update.message.reply_text(
