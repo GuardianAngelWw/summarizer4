@@ -1614,15 +1614,15 @@ async def main():
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
-        application.add_handler(CommandHandler("download", download_csv))  # Admin-only
-#        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
+        application.add_handler(CommandHandler("download", download_db))  # Admin-only
+        application.add_handler(CommandHandler("upload", handle_db_upload))  # Admin-only
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
         application.add_handler(CommandHandler("here", here_command))  # Available to all users
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
         application.add_handler(CommandHandler("s", show_entry_command))
         application.add_handler(CommandHandler("i", insert_entry_command))
         application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
-        application.add_handler(CommandHandler("download_db", download_db))
+#        application.add_handler(CommandHandler("download_db", download_db))
         application.add_handler(MessageHandler(
             filters.Document.FileExtension(".db") & filters.REPLY,
             handle_db_upload
