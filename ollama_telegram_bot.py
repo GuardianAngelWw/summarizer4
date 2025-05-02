@@ -33,6 +33,7 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatType
 import requests
 import json
+from sub_directory.storage import EntryStorage
 from flask import Flask, jsonify
 import logging.handlers
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
