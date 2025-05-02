@@ -88,6 +88,119 @@ def rate_limit(key_func: Optional[Callable] = None):
         return wrapper
     return decorator
 
+# --- SQLite Storage Layer (add this section before your handlers, after imports) ---
+import sqlite3
+import threading
+
+class EntryStorage:
+    def __init__(self, db_path="entries.db"):
+        self.db_path = db_path
+        self._lock = threading.Lock()
+        self._init_db()
+
+    def _get_conn(self):
+        return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _init_db(self):
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            c.execute('CREATE VIRTUAL TABLE IF NOT EXISTS entries USING FTS5(text, link, category)')
+            c.execute('CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY)')
+            c.execute('SELECT COUNT(*) FROM categories')
+            if c.fetchone()[0] == 0:
+                c.executemany('INSERT INTO categories (name) VALUES (?)',
+                              [('General',), ('Documentation',), ('Tutorials',), ('References',)])
+            conn.commit()
+
+    def add_entry(self, text: str, link: str, category: str = "General") -> bool:
+        with self._lock, self._get_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT 1 FROM entries WHERE text=? AND link=?', (text, link))
+            if c.fetchone():
+                return False
+            c.execute('INSERT INTO entries (text, link, category) VALUES (?, ?, ?)', (text, link, category))
+            c.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
+            conn.commit()
+        return True
+
+    def insert_entry_at(self, index: int, text: str, link: str, category: str = "General") -> bool:
+        with self._lock, self._get_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT text, link, category FROM entries ORDER BY rowid')
+            entries = c.fetchall()
+            new_row = (text, link, category)
+            if index < 0 or index > len(entries):
+                return False
+            entries = entries[:index] + [new_row] + entries[index:]
+            c.execute('DELETE FROM entries')
+            c.executemany('INSERT INTO entries (text, link, category) VALUES (?, ?, ?)', entries)
+            c.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
+            conn.commit()
+        return True
+
+    def get_entries(self, category: Optional[str] = None) -> list:
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            if category:
+                c.execute('SELECT rowid, text, link, category FROM entries WHERE category=? ORDER BY rowid', (category,))
+            else:
+                c.execute('SELECT rowid, text, link, category FROM entries ORDER BY rowid')
+            return [{"id": row[0], "text": row[1], "link": row[2], "category": row[3]} for row in c.fetchall()]
+
+    def get_entry_by_index(self, index: int) -> Optional[dict]:
+        entries = self.get_entries()
+        if 0 <= index < len(entries):
+            return entries[index]
+        return None
+
+    def delete_entry_by_index(self, index: int) -> bool:
+        entries = self.get_entries()
+        if 0 <= index < len(entries):
+            entry_id = entries[index]['id']
+            with self._lock, self._get_conn() as conn:
+                c = conn.cursor()
+                c.execute('DELETE FROM entries WHERE rowid=?', (entry_id,))
+                conn.commit()
+                return c.rowcount > 0
+        return False
+
+    def search_entries(self, query: str, category: Optional[str] = None, top_n: int = 8) -> list:
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            match_query = query
+            if category:
+                match_query = f'{query} category:{category}'
+            c.execute('SELECT rowid, text, link, category FROM entries WHERE entries MATCH ? ORDER BY rank LIMIT ?', (match_query, top_n))
+            return [{"id": row[0], "text": row[1], "link": row[2], "category": row[3]} for row in c.fetchall()]
+
+    def clear_entries(self, category: Optional[str] = None) -> int:
+        with self._lock, self._get_conn() as conn:
+            c = conn.cursor()
+            if category:
+                c.execute('DELETE FROM entries WHERE category=?', (category,))
+            else:
+                c.execute('DELETE FROM entries')
+            affected = c.rowcount
+            conn.commit()
+            return affected
+
+    def get_categories(self) -> list:
+        with self._get_conn() as conn:
+            c = conn.cursor()
+            c.execute('SELECT name FROM categories ORDER BY name')
+            return [row[0] for row in c.fetchall()]
+
+    def add_category(self, category: str) -> bool:
+        with self._lock, self._get_conn() as conn:
+            c = conn.cursor()
+            try:
+                c.execute('INSERT INTO categories (name) VALUES (?)', (category,))
+                conn.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+# Instantiate the storage object after this class
 storage = EntryStorage()
 
 # Add these constants at the top of your file
@@ -427,103 +540,6 @@ async def slowmode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(
             f"Usage: /slowmode <seconds>\nCurrent: {get_slowmode()} seconds.")
 
-@admin_only  # Remove if you want all users to be able to use it
-async def insert_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Insert a new entry at the specified row (1-based index) in the CSV.
-    Usage: /i <number> "entry text" "link" "optional_category"
-    """
-    text = update.message.text
-    match = re.match(r'/i\s+(\d+)\s+"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
-    if not match:
-        await update.message.reply_text(
-            'Usage:\n'
-            '/i <row_number> "entry text" "link" "optional_category"\n'
-            'Example:\n'
-            '/i 3 "Some text" "https://example.com" "Category"'
-        )
-        return
-    row = int(match.group(1)) - 1  # Convert to zero-based index
-    entry_text = match.group(2)
-    link = match.group(3)
-    category = match.group(4) if match.group(4) else "General"
-
-    entries = read_entries()
-    if row < 0 or row > len(entries):
-        await update.message.reply_text(
-            f"Row number out of range. There are currently {len(entries)} entries. "
-            "Use /i <number> where number is between 1 and {len(entries)+1}."
-        )
-        return
-
-    # Check for duplicates (optional, just like add_entry logic)
-    for entry in entries:
-        if entry["text"] == entry_text and entry["link"] == link:
-            await update.message.reply_text("❌ Error: Entry already exists.")
-            return
-
-    # Ensure the category exists (or add it)
-    add_category(category)
-
-    new_entry = {
-        "text": entry_text,
-        "link": link,
-        "category": category
-    }
-    entries.insert(row, new_entry)
-    if write_entries(entries):
-        await update.message.reply_text(
-            f"✅ Inserted new entry at row {row+1}:\n\n"
-            f"Category: {category}\nText: {entry_text}\nLink: {link}"
-        )
-    else:
-        await update.message.reply_text("❌ Error: Failed to insert entry due to a write error.")
-
-@admin_only  # Remove this decorator if you want all users to use /s
-async def show_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the full details of a specific entry by index, with a delete button."""
-    args = context.args
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /s <entry_number>\nExample: /s 4")
-        return
-    idx = int(args[0]) - 1  # Convert to zero-based index
-    entries = read_entries()
-    if idx < 0 or idx >= len(entries):
-        await update.message.reply_text(f"Entry #{args[0]} does not exist. There are {len(entries)} entries.")
-        return
-    entry = entries[idx]
-    msg = (
-        f"<b>Entry #{idx+1}</b>\n"
-        f"<b>Category:</b> {entry.get('category', 'General')}\n"
-        f"<b>Text:</b>\n<blockquote>{entry['text']}</blockquote>\n"
-        f"<b>Link:</b> <a href='{entry['link']}'>{entry['link']}</a>"
-    )
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑️ Delete", callback_data=f"sdelete:{idx}")]
-    ])
-    await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
-
-@admin_only  # Only allow admins to delete
-async def handle_single_entry_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the delete button for a specific entry shown via /s."""
-    query = update.callback_query
-    user_id = update.effective_user.id
-    data = query.data
-    idx = int(data.split(":", 1)[1])
-    entries = read_entries()
-    if idx < 0 or idx >= len(entries):
-        await query.answer("Entry does not exist.", show_alert=True)
-        return
-    entry = entries[idx]
-    # Delete the entry
-    if delete_entry(idx):
-        await query.edit_message_text(
-            f"✅ Entry #{idx+1} deleted successfully.\n\n"
-            f"Category: {entry.get('category', 'General')}\n"
-            f"Text: {entry['text'][:60]}{'...' if len(entry['text']) > 60 else ''}"
-        )
-    else:
-        await query.answer("Failed to delete entry.", show_alert=True)
 
 def clean_telegram_html(text: str) -> str:
     """
@@ -585,7 +601,7 @@ def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
     scheduler.start()
     logger.info("Scheduled daily CSV backup to logs channel.")
 
-def get_categories() -> List[str]:
+'''def get_categories() -> List[str]:
     """Get the list of categories."""
     try:
         with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
@@ -611,9 +627,9 @@ def add_category(category: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"Error writing categories: {str(e)}")
-        return False
+        return False '''
 
-def read_entries(category: Optional[str] = None) -> List[Dict[str, str]]:
+'''def read_entries(category: Optional[str] = None) -> List[Dict[str, str]]:
     """Read entries from the CSV file with optional filtering by category only."""
     entries = []
     try:
@@ -683,10 +699,10 @@ def clear_all_entries(category: Optional[str] = None) -> int:
     if count > 0:
         success = write_entries(entries_to_keep)
         return count if success else 0
-    return 0
+    return 0 '''
 
 # --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
-
+'''
 def search_entries_advanced(
     query: str,
     category: Optional[str] = None,
@@ -750,7 +766,7 @@ def search_entries_advanced(
     if len(filtered) < min_results:
         filtered = [e for _, e in scored[:max(top_n, min_results)]]
 
-    return filtered[:top_n]
+    return filtered[:top_n] '''
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
     """Search for entries matching the query, with optional category filtering (no group)."""
@@ -941,7 +957,7 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     entry_text = match_groups[0]
     link = match_groups[1]
     category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
-    if add_entry(entry_text, link, category):
+    if storage.add_entry(entry_text, link, category):
         await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
     else:
         await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
@@ -957,7 +973,7 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             query = arg
     page = int(context.user_data.get('page', 0))
-    entries = search_entries(query, category) if query else read_entries(category)
+    entries = storage.get_entries(category)
     total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
     start_idx = page * ENTRIES_PER_PAGE
     end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
