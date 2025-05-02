@@ -1609,11 +1609,8 @@ async def main():
             await application.run_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,
-                poll_interval=1.0,  # Check for updates every second
-                timeout=30,  # Longer timeout for API requests
-                read_timeout=30,
-                write_timeout=30,
-                connect_timeout=30
+                poll_interval=1.0,
+                timeout=30
             )
         except Exception as e:
             logger.critical(f"Error in run_polling: {e}", exc_info=True)
