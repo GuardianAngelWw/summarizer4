@@ -47,26 +47,6 @@ except ImportError:
 # Global variable for slowmode seconds (default)
 SLOWMODE_SECONDS = 3  # Default, can be changed via /slowmode command
 
-# Global mutable configuration for runtime updates via admin commands
-CURRENT_AI_MODEL = GROQ_MODEL
-CURRENT_AI_API_KEY = TOGETHER_API_KEY
-
-def set_ai_model(new_model: str) -> bool:
-    global CURRENT_AI_MODEL
-    if not new_model or not isinstance(new_model, str):
-        return False
-    CURRENT_AI_MODEL = new_model.strip()
-    logger.info(f"AI model updated to: {CURRENT_AI_MODEL}")
-    return True
-
-def set_ai_api_key(new_key: str) -> bool:
-    global CURRENT_AI_API_KEY
-    if not new_key or not isinstance(new_key, str):
-        return False
-    CURRENT_AI_API_KEY = new_key.strip()
-    logger.info("AI API key updated (not shown for security).")
-    return True
-
 # Per-user per-command last called tracking (in-memory)
 _user_command_timestamps: Dict[Tuple[int, str], float] = {}
 
@@ -263,6 +243,26 @@ CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
+
+# Global mutable configuration for runtime updates via admin commands
+CURRENT_AI_MODEL = GROQ_MODEL
+CURRENT_AI_API_KEY = TOGETHER_API_KEY
+
+def set_ai_model(new_model: str) -> bool:
+    global CURRENT_AI_MODEL
+    if not new_model or not isinstance(new_model, str):
+        return False
+    CURRENT_AI_MODEL = new_model.strip()
+    logger.info(f"AI model updated to: {CURRENT_AI_MODEL}")
+    return True
+
+def set_ai_api_key(new_key: str) -> bool:
+    global CURRENT_AI_API_KEY
+    if not new_key or not isinstance(new_key, str):
+        return False
+    CURRENT_AI_API_KEY = new_key.strip()
+    logger.info("AI API key updated (not shown for security).")
+    return True
 
 # Flask app initialization
 app = Flask(__name__)
