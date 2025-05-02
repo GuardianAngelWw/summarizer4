@@ -16,6 +16,7 @@ import nest_asyncio
 import threading
 import asyncio
 import time
+from typing import Callable, Optional, Dict, Tuple
 from apscheduler.schedulers.background import BackgroundScheduler
 # Apply nest_asyncio to patch the event loop
 nest_asyncio.apply()
@@ -42,6 +43,49 @@ try:
 except ImportError:
     raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
 # No need for duplicate imports as they're already defined above
+
+# Global variable for slowmode seconds (default)
+SLOWMODE_SECONDS = 3  # Default, can be changed via /slowmode command
+
+# Per-user per-command last called tracking (in-memory)
+_user_command_timestamps: Dict[Tuple[int, str], float] = {}
+
+def set_slowmode(seconds: int):
+    global SLOWMODE_SECONDS
+    SLOWMODE_SECONDS = max(1, int(seconds))
+
+def get_slowmode():
+    return SLOWMODE_SECONDS
+
+def rate_limit(key_func: Optional[Callable] = None):
+    """
+    Decorator to limit command usage per user; deletes the message if rate limited.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(update, context, *args, **kwargs):
+            user_id = update.effective_user.id if update.effective_user else None
+            command = func.__name__
+            key = (user_id, command)
+            if key_func:
+                key = key_func(update, context)
+            now = time.monotonic()
+            last = _user_command_timestamps.get(key, 0)
+            limit_seconds = get_slowmode()
+            if now - last < limit_seconds:
+                # Attempt to delete the triggering message
+                try:
+                    if hasattr(update, "message") and update.message and update.message.delete:
+                        await update.message.delete()
+                        logger.info(f"Rate limited and deleted message from user_id {user_id} for command '{command}'.")
+                except Exception as e:
+                    logger.warning(f"Failed to delete message for rate-limited user_id {user_id} on command '{command}': {e}")
+                # Silently ignore, do not send any message
+                return
+            _user_command_timestamps[key] = now
+            return await func(update, context, *args, **kwargs)
+        return wrapper
+    return decorator
 
 # Add these constants at the top of your file
 STARTUP_MESSAGE = """
@@ -272,6 +316,22 @@ def admin_only(func):
             
         return await func(update, context, *args, **kwargs)
     return wrapped
+
+# ---- Slowmode control command (admins only) ----
+
+@admin_only
+async def slowmode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Set the global slowmode (rate limit) in seconds. Usage: /slowmode 10
+    """
+    if context.args and context.args[0].isdigit():
+        seconds = int(context.args[0])
+        set_slowmode(seconds)
+        await update.message.reply_text(f"⏱ Slow mode set to {seconds} seconds.")
+        logger.info(f"Slow mode set to {seconds} seconds by admin {update.effective_user.id}.")
+    else:
+        await update.message.reply_text(
+            f"Usage: /slowmode <seconds>\nCurrent: {get_slowmode()} seconds.")
 
 @admin_only  # Remove if you want all users to be able to use it
 async def insert_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -659,7 +719,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
  #   help_text += "\nUse categories to organize your knowledge entries."
     await update.message.reply_html(help_text)
-    
+
+@rate_limit()
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Answer a question using the LLM but reply to the person being replied to and delete the command."""
     # Check if this message is a reply
@@ -1129,6 +1190,7 @@ async def generate_response(prompt: str, _, __=None) -> str:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
+@rate_limit()
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
     if not question:
@@ -1391,6 +1453,7 @@ async def main():
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
         application.add_handler(CommandHandler("s", show_entry_command))
         application.add_handler(CommandHandler("i", insert_entry_command))
+        application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
         # Enhanced callback query handlers
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
