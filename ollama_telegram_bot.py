@@ -1603,7 +1603,7 @@ async def main():
             application.bot._log = True
             # Detailed logging of telegram updates
             logger.info(f"Bot will listen for the following update types: {Update.ALL_TYPES}")
-            logger.info(f"Bot username: {application.bot.username}, Bot ID: {application.bot.id}")
+#            logger.info(f"Bot username: {application.bot.username}, Bot ID: {application.bot.id}")
             
             # Start polling with aggressive settings to ensure we get updates
             await application.run_polling(
