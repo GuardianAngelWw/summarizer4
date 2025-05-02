@@ -1394,7 +1394,7 @@ async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         caption="Here's your complete knowledge base CSV file."
     )
 
-@admin_only
+'''@admin_only
 async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Request the user to upload a CSV file."""
     categories = storage.get_categories()
@@ -1542,7 +1542,7 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(message)
     except Exception as e:
         logger.error(f"Error handling CSV action: {str(e)}")
-        await query.edit_message_text(f"Error: {str(e)}")
+        await query.edit_message_text(f"Error: {str(e)}")'''
 
 # Modify your main function to use the status monitor
 async def main():
