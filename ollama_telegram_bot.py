@@ -16,6 +16,7 @@ import nest_asyncio
 import threading
 import asyncio
 import time
+from typing import Callable, Optional, Dict, Tuple
 from apscheduler.schedulers.background import BackgroundScheduler
 # Apply nest_asyncio to patch the event loop
 nest_asyncio.apply()
@@ -33,6 +34,8 @@ import requests
 import json
 from flask import Flask, jsonify
 import logging.handlers
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import CommandHandler, CallbackQueryHandler
 # Groq API client will be imported as needed
 # Add fuzzy matching for advanced search-then-summarize (preferred: rapidfuzz)
 try:
@@ -40,6 +43,49 @@ try:
 except ImportError:
     raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
 # No need for duplicate imports as they're already defined above
+
+# Global variable for slowmode seconds (default)
+SLOWMODE_SECONDS = 3  # Default, can be changed via /slowmode command
+
+# Per-user per-command last called tracking (in-memory)
+_user_command_timestamps: Dict[Tuple[int, str], float] = {}
+
+def set_slowmode(seconds: int):
+    global SLOWMODE_SECONDS
+    SLOWMODE_SECONDS = max(1, int(seconds))
+
+def get_slowmode():
+    return SLOWMODE_SECONDS
+
+def rate_limit(key_func: Optional[Callable] = None):
+    """
+    Decorator to limit command usage per user; deletes the message if rate limited.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(update, context, *args, **kwargs):
+            user_id = update.effective_user.id if update.effective_user else None
+            command = func.__name__
+            key = (user_id, command)
+            if key_func:
+                key = key_func(update, context)
+            now = time.monotonic()
+            last = _user_command_timestamps.get(key, 0)
+            limit_seconds = get_slowmode()
+            if now - last < limit_seconds:
+                # Attempt to delete the triggering message
+                try:
+                    if hasattr(update, "message") and update.message and update.message.delete:
+                        await update.message.delete()
+                        logger.info(f"Rate limited and deleted message from user_id {user_id} for command '{command}'.")
+                except Exception as e:
+                    logger.warning(f"Failed to delete message for rate-limited user_id {user_id} on command '{command}': {e}")
+                # Silently ignore, do not send any message
+                return
+            _user_command_timestamps[key] = now
+            return await func(update, context, *args, **kwargs)
+        return wrapper
+    return decorator
 
 # Add these constants at the top of your file
 STARTUP_MESSAGE = """
@@ -165,7 +211,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAEnsdd9byWO2m8u2HoYtS5UmTOlXIX5DQM"
+BOT_TOKEN = "6614402193:AAGXg-AS9xZV8A7n6SHL0Wy2-dOstLu8FdI"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -197,6 +243,26 @@ CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 # Update the model configuration for Groq API
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
+
+# Global mutable configuration for runtime updates via admin commands
+CURRENT_AI_MODEL = GROQ_MODEL
+CURRENT_AI_API_KEY = TOGETHER_API_KEY
+
+def set_ai_model(new_model: str) -> bool:
+    global CURRENT_AI_MODEL
+    if not new_model or not isinstance(new_model, str):
+        return False
+    CURRENT_AI_MODEL = new_model.strip()
+    logger.info(f"AI model updated to: {CURRENT_AI_MODEL}")
+    return True
+
+def set_ai_api_key(new_key: str) -> bool:
+    global CURRENT_AI_API_KEY
+    if not new_key or not isinstance(new_key, str):
+        return False
+    CURRENT_AI_API_KEY = new_key.strip()
+    logger.info("AI API key updated (not shown for security).")
+    return True
 
 # Flask app initialization
 app = Flask(__name__)
@@ -255,6 +321,161 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
     except Exception as e:
         logger.error(f"Error checking admin status: {str(e)}")
         return False
+
+def admin_only(func):
+    """Decorator to restrict command access to admin users only"""
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+        
+        # Check if user is an admin
+        if not await is_admin(context, chat_id, user_id):
+            await update.message.reply_text("Sorry, this command is restricted to admins only.")
+            return
+            
+        return await func(update, context, *args, **kwargs)
+    return wrapped
+
+@admin_only
+async def set_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Usage: /setmodel <model-name>")
+        return
+    new_model = " ".join(context.args).strip()
+    if set_ai_model(new_model):
+        await update.message.reply_text(
+            f"✅ AI model updated to: <code>{CURRENT_AI_MODEL}</code>",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await update.message.reply_text("❌ Failed to update model. Provide a valid model name.")
+
+@admin_only
+async def set_apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Never echo back the API key!
+    if not context.args:
+        await update.message.reply_text("Usage: /setapikey <API-key>")
+        return
+    new_key = " ".join(context.args).strip()
+    if set_ai_api_key(new_key):
+        await update.message.reply_text("✅ AI API key updated successfully.")
+    else:
+        await update.message.reply_text("❌ Failed to update API key. Provide a valid key.")
+
+# ---- Slowmode control command (admins only) ----
+
+@admin_only
+async def slowmode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Set the global slowmode (rate limit) in seconds. Usage: /slowmode 10
+    """
+    if context.args and context.args[0].isdigit():
+        seconds = int(context.args[0])
+        set_slowmode(seconds)
+        await update.message.reply_text(f"⏱ Slow mode set to {seconds} seconds.")
+        logger.info(f"Slow mode set to {seconds} seconds by admin {update.effective_user.id}.")
+    else:
+        await update.message.reply_text(
+            f"Usage: /slowmode <seconds>\nCurrent: {get_slowmode()} seconds.")
+
+@admin_only  # Remove if you want all users to be able to use it
+async def insert_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Insert a new entry at the specified row (1-based index) in the CSV.
+    Usage: /i <number> "entry text" "link" "optional_category"
+    """
+    text = update.message.text
+    match = re.match(r'/i\s+(\d+)\s+"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
+    if not match:
+        await update.message.reply_text(
+            'Usage:\n'
+            '/i <row_number> "entry text" "link" "optional_category"\n'
+            'Example:\n'
+            '/i 3 "Some text" "https://example.com" "Category"'
+        )
+        return
+    row = int(match.group(1)) - 1  # Convert to zero-based index
+    entry_text = match.group(2)
+    link = match.group(3)
+    category = match.group(4) if match.group(4) else "General"
+
+    entries = read_entries()
+    if row < 0 or row > len(entries):
+        await update.message.reply_text(
+            f"Row number out of range. There are currently {len(entries)} entries. "
+            "Use /i <number> where number is between 1 and {len(entries)+1}."
+        )
+        return
+
+    # Check for duplicates (optional, just like add_entry logic)
+    for entry in entries:
+        if entry["text"] == entry_text and entry["link"] == link:
+            await update.message.reply_text("❌ Error: Entry already exists.")
+            return
+
+    # Ensure the category exists (or add it)
+    add_category(category)
+
+    new_entry = {
+        "text": entry_text,
+        "link": link,
+        "category": category
+    }
+    entries.insert(row, new_entry)
+    if write_entries(entries):
+        await update.message.reply_text(
+            f"✅ Inserted new entry at row {row+1}:\n\n"
+            f"Category: {category}\nText: {entry_text}\nLink: {link}"
+        )
+    else:
+        await update.message.reply_text("❌ Error: Failed to insert entry due to a write error.")
+
+@admin_only  # Remove this decorator if you want all users to use /s
+async def show_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the full details of a specific entry by index, with a delete button."""
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /s <entry_number>\nExample: /s 4")
+        return
+    idx = int(args[0]) - 1  # Convert to zero-based index
+    entries = read_entries()
+    if idx < 0 or idx >= len(entries):
+        await update.message.reply_text(f"Entry #{args[0]} does not exist. There are {len(entries)} entries.")
+        return
+    entry = entries[idx]
+    msg = (
+        f"<b>Entry #{idx+1}</b>\n"
+        f"<b>Category:</b> {entry.get('category', 'General')}\n"
+        f"<b>Text:</b>\n<blockquote>{entry['text']}</blockquote>\n"
+        f"<b>Link:</b> <a href='{entry['link']}'>{entry['link']}</a>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ Delete", callback_data=f"sdelete:{idx}")]
+    ])
+    await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
+
+@admin_only  # Only allow admins to delete
+async def handle_single_entry_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the delete button for a specific entry shown via /s."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    data = query.data
+    idx = int(data.split(":", 1)[1])
+    entries = read_entries()
+    if idx < 0 or idx >= len(entries):
+        await query.answer("Entry does not exist.", show_alert=True)
+        return
+    entry = entries[idx]
+    # Delete the entry
+    if delete_entry(idx):
+        await query.edit_message_text(
+            f"✅ Entry #{idx+1} deleted successfully.\n\n"
+            f"Category: {entry.get('category', 'General')}\n"
+            f"Text: {entry['text'][:60]}{'...' if len(entry['text']) > 60 else ''}"
+        )
+    else:
+        await query.answer("Failed to delete entry.", show_alert=True)
 
 def clean_telegram_html(text: str) -> str:
     """
@@ -315,22 +536,6 @@ def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
     scheduler.add_job(job, "cron", hour=0, minute=10, id="daily_csv_backup", replace_existing=True)
     scheduler.start()
     logger.info("Scheduled daily CSV backup to logs channel.")
-
-        
-def admin_only(func):
-    """Decorator to restrict command access to admin users only"""
-    @wraps(func)
-    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-        user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
-        
-        # Check if user is an admin
-        if not await is_admin(context, chat_id, user_id):
-            await update.message.reply_text("Sorry, this command is restricted to admins only.")
-            return
-            
-        return await func(update, context, *args, **kwargs)
-    return wrapped
 
 def get_categories() -> List[str]:
     """Get the list of categories."""
@@ -434,22 +639,70 @@ def clear_all_entries(category: Optional[str] = None) -> int:
 
 # --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
 
-def search_entries_advanced(query: str, category: Optional[str] = None, top_n: int = 8) -> List[Dict[str, str]]:
+def search_entries_advanced(
+    query: str,
+    category: Optional[str] = None,
+    top_n: int = 8,
+    min_results: int = 2,
+    score_threshold: int = 50
+) -> List[Dict[str, str]]:
     """
-    Fuzzy search in entries and return top_n most relevant ones (by text/category fields).
+    Advanced fuzzy search in entries with keyword and full-query relevance.
+    - Tokenizes query and boosts entries matching more keywords.
+    - Allows threshold adjustment.
+    - Further boosts entries that match all words in the query.
+    - Guarantees at least min_results (if available).
     """
     entries = read_entries(category=category)
     if not query:
         return entries[:top_n]  # Return first N if no query
+
     query = query.strip().lower()
+    # Tokenize query into keywords (words of length >= 2)
+    keywords = [word for word in re.findall(r'\w+', query) if len(word) > 1]
+    keyword_set = set(keywords)
+
     scored = []
     for entry in entries:
-        score_text = fuzz.partial_ratio(query, entry["text"].lower())
-        score_cat = fuzz.partial_ratio(query, entry.get("category", "").lower())
-        max_score = max(score_text, score_cat)
-        scored.append((max_score, entry))
+        text = entry["text"].lower()
+        cat = entry.get("category", "").lower()
+
+        # Fuzzy scores for full query
+        score_text = fuzz.token_sort_ratio(query, text)
+        score_cat = fuzz.token_sort_ratio(query, cat)
+        score_partial_text = fuzz.partial_ratio(query, text)
+        score_partial_cat = fuzz.partial_ratio(query, cat)
+
+        # Keyword-based scoring
+        entry_words = set(re.findall(r'\w+', text + " " + cat))
+        keyword_matches = keyword_set & entry_words
+        keyword_match_count = len(keyword_matches)
+
+        # Boost if all query keywords are present
+        all_keywords_in_entry = keyword_set.issubset(entry_words)
+        keyword_boost = 10 * keyword_match_count
+        if all_keywords_in_entry and keyword_set:
+            keyword_boost += 20
+
+        # Composite score
+        composite_score = (
+            0.4 * score_text +
+            0.2 * score_cat +
+            0.2 * score_partial_text +
+            0.1 * score_partial_cat +
+            keyword_boost
+        )
+        scored.append((composite_score, entry))
+
+    # Sort by score, descending
     scored.sort(reverse=True, key=lambda x: x[0])
-    return [e for _, e in scored[:top_n]]
+
+    # Filter by threshold but ensure at least min_results
+    filtered = [e for score, e in scored if score >= score_threshold]
+    if len(filtered) < min_results:
+        filtered = [e for _, e in scored[:max(top_n, min_results)]]
+
+    return filtered[:top_n]
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
     """Search for entries matching the query, with optional category filtering (no group)."""
@@ -464,13 +717,10 @@ def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str,
 # Updated load_llm function to use Groq API
 async def load_llm():
     try:
-        logger.info(f"Using Groq API with model: {GROQ_MODEL}")
-        
-        if not TOGETHER_API_KEY:  # Still using the TOGETHER_API_KEY variable name for now
-            logger.error("GROQ_API_KEY is not set. Please set it in .env file or environment variables.")
-            raise ValueError("GROQ_API_KEY is required")
-        
-        # Return a basic structure to confirm Groq setup
+        logger.info(f"Using Groq API with model: {CURRENT_AI_MODEL}")
+        if not CURRENT_AI_API_KEY:
+            logger.error("AI API key is not set. Please set it with /setapikey.")
+            raise ValueError("AI API key is required")
         return {"groq_client": True}
     except Exception as e:
         logger.error(f"Error initializing Groq client: {str(e)}")
@@ -512,7 +762,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     
  #   help_text += "\nUse categories to organize your knowledge entries."
     await update.message.reply_html(help_text)
-    
+
+@rate_limit()
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Answer a question using the LLM but reply to the person being replied to and delete the command."""
     # Check if this message is a reply
@@ -913,6 +1164,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def build_prompt(question: str, context_text: str) -> str:
     return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
+    - **NEVER** send what you're **thinking** just send the processed output mentioned as below.
     - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
     - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
@@ -924,6 +1176,7 @@ def build_prompt(question: str, context_text: str) -> str:
 
     Knowledge Base:
     {context_text}"""
+
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     """
@@ -956,31 +1209,23 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
 async def generate_response(prompt: str, _, __=None) -> str:
     try:
         logger.info("Sending request to Groq API...")
-        
-        # Import groq only when needed
         import groq
-        
-        # Initialize Groq client
-        client = groq.AsyncGroq(api_key=TOGETHER_API_KEY)  # Using the existing variable name but it now contains Groq API key
-        
-        # Use chat completions with proper formatting
+        client = groq.AsyncGroq(api_key=CURRENT_AI_API_KEY)
         chat_completion = await client.chat.completions.create(
-            model=GROQ_MODEL,  # Use the configured Groq model
+            model=CURRENT_AI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=800,  # Increased token count but still within safe limits
+            max_tokens=800,
             top_p=0.95
         )
-        
-        # Extract the response
         answer = chat_completion.choices[0].message.content
-        
         logger.info("Received response from Groq API")
         return answer.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
+@rate_limit()
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
     if not question:
@@ -1233,6 +1478,8 @@ async def main():
         # Standard command handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", start))
+        application.add_handler(CommandHandler("setmodel", set_model_command))   # <--- PATCH: Add this line
+        application.add_handler(CommandHandler("setapikey", set_apikey_command)) # <--- PATCH: Add this line
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
@@ -1241,7 +1488,9 @@ async def main():
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
         application.add_handler(CommandHandler("here", here_command))  # Available to all users
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
-    
+        application.add_handler(CommandHandler("s", show_entry_command))
+        application.add_handler(CommandHandler("i", insert_entry_command))
+        application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
         # Enhanced callback query handlers
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
@@ -1250,6 +1499,7 @@ async def main():
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
         application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
+        application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
     
         # Document handler for CSV upload - more permissive to handle different formats
         application.add_handler(
