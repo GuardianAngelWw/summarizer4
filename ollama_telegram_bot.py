@@ -1,7 +1,6 @@
 import os
 import csv
 import sys
-from storage import EntryStorage
 import asyncio
 import logging
 import re
@@ -352,8 +351,17 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAFm20KAR6qSfiPhVmNcqe53GrUG-OJA-Zo"
+# Load environment variables
+load_dotenv()
+
+# Get bot token from environment variable, with a fallback for backward compatibility
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 bot_token = BOT_TOKEN
+
+# Check if token is available
+if not BOT_TOKEN:
+    logging.error("TELEGRAM_BOT_TOKEN environment variable not set. Please set it in your .env file.")
+    sys.exit(1)
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -1589,7 +1597,8 @@ async def main():
         logger.info("Starting bot polling...")
         try:
             # Configure telegram bot with more detailed logging
-            application.bot._http.logger.setLevel(logging.INFO)
+            # Set logging level for the application
+            logging.getLogger('httpx').setLevel(logging.INFO)
             # Enable debug mode in telegram bot api
             application.bot._log = True
             # Detailed logging of telegram updates
