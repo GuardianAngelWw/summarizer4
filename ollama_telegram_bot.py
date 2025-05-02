@@ -1,6 +1,7 @@
 import os
 import csv
 import sys
+from storage import EntryStorage
 import asyncio
 import logging
 import re
@@ -86,6 +87,8 @@ def rate_limit(key_func: Optional[Callable] = None):
             return await func(update, context, *args, **kwargs)
         return wrapper
     return decorator
+
+storage = EntryStorage()
 
 # Add these constants at the top of your file
 STARTUP_MESSAGE = """
@@ -336,6 +339,51 @@ def admin_only(func):
             
         return await func(update, context, *args, **kwargs)
     return wrapped
+
+@admin_only
+async def insert_entry_command(update, context):
+    text = update.message.text
+    match = re.match(r'/i\s+(\d+)\s+"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
+    if not match:
+        await update.message.reply_text('Usage:\n/i <row_number> "entry text" "link" "optional_category"\nExample:\n/i 3 "Some text" "https://example.com" "Category"')
+        return
+    row = int(match.group(1)) - 1
+    entry_text = match.group(2)
+    link = match.group(3)
+    category = match.group(4) if match.group(4) else "General"
+    if storage.insert_entry_at(row, entry_text, link, category):
+        await update.message.reply_text(f"✅ Inserted at row {row+1}:\nCategory: {category}\nText: {entry_text}\nLink: {link}")
+    else:
+        await update.message.reply_text("❌ Error: Invalid row or duplicate entry.")
+
+@admin_only
+async def show_entry_command(update, context):
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /s <entry_number>\nExample: /s 4")
+        return
+    idx = int(args[0]) - 1
+    entry = storage.get_entry_by_index(idx)
+    if not entry:
+        await update.message.reply_text(f"Entry #{args[0]} does not exist.")
+        return
+    msg = (f"<b>Entry #{idx+1}</b>\n"
+           f"<b>Category:</b> {entry['category']}\n"
+           f"<b>Text:</b>\n<blockquote>{entry['text']}</blockquote>\n"
+           f"<b>Link:</b> <a href='{entry['link']}'>{entry['link']}</a>")
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ Delete", callback_data=f"sdelete:{idx}")]
+    ])
+    await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
+
+@admin_only
+async def handle_single_entry_delete(update, context):
+    query = update.callback_query
+    idx = int(query.data.split(":", 1)[1])
+    if storage.delete_entry_by_index(idx):
+        await query.edit_message_text(f"✅ Entry #{idx+1} deleted successfully.")
+    else:
+        await query.answer("Failed to delete entry.", show_alert=True)
 
 @admin_only
 async def set_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
