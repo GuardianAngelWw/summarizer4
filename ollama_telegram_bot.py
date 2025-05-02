@@ -273,6 +273,58 @@ def admin_only(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
+@admin_only  # Remove if you want all users to be able to use it
+async def insert_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Insert a new entry at the specified row (1-based index) in the CSV.
+    Usage: /i <number> "entry text" "link" "optional_category"
+    """
+    text = update.message.text
+    match = re.match(r'/i\s+(\d+)\s+"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
+    if not match:
+        await update.message.reply_text(
+            'Usage:\n'
+            '/i <row_number> "entry text" "link" "optional_category"\n'
+            'Example:\n'
+            '/i 3 "Some text" "https://example.com" "Category"'
+        )
+        return
+    row = int(match.group(1)) - 1  # Convert to zero-based index
+    entry_text = match.group(2)
+    link = match.group(3)
+    category = match.group(4) if match.group(4) else "General"
+
+    entries = read_entries()
+    if row < 0 or row > len(entries):
+        await update.message.reply_text(
+            f"Row number out of range. There are currently {len(entries)} entries. "
+            "Use /i <number> where number is between 1 and {len(entries)+1}."
+        )
+        return
+
+    # Check for duplicates (optional, just like add_entry logic)
+    for entry in entries:
+        if entry["text"] == entry_text and entry["link"] == link:
+            await update.message.reply_text("❌ Error: Entry already exists.")
+            return
+
+    # Ensure the category exists (or add it)
+    add_category(category)
+
+    new_entry = {
+        "text": entry_text,
+        "link": link,
+        "category": category
+    }
+    entries.insert(row, new_entry)
+    if write_entries(entries):
+        await update.message.reply_text(
+            f"✅ Inserted new entry at row {row+1}:\n\n"
+            f"Category: {category}\nText: {entry_text}\nLink: {link}"
+        )
+    else:
+        await update.message.reply_text("❌ Error: Failed to insert entry due to a write error.")
+
 @admin_only  # Remove this decorator if you want all users to use /s
 async def show_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show the full details of a specific entry by index, with a delete button."""
@@ -1338,6 +1390,7 @@ async def main():
         application.add_handler(CommandHandler("here", here_command))  # Available to all users
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
         application.add_handler(CommandHandler("s", show_entry_command))
+        application.add_handler(CommandHandler("i", insert_entry_command))
         # Enhanced callback query handlers
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
