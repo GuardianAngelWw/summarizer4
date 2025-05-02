@@ -244,6 +244,26 @@ CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
 
+# Global mutable configuration for runtime updates via admin commands
+CURRENT_AI_MODEL = GROQ_MODEL
+CURRENT_AI_API_KEY = TOGETHER_API_KEY
+
+def set_ai_model(new_model: str) -> bool:
+    global CURRENT_AI_MODEL
+    if not new_model or not isinstance(new_model, str):
+        return False
+    CURRENT_AI_MODEL = new_model.strip()
+    logger.info(f"AI model updated to: {CURRENT_AI_MODEL}")
+    return True
+
+def set_ai_api_key(new_key: str) -> bool:
+    global CURRENT_AI_API_KEY
+    if not new_key or not isinstance(new_key, str):
+        return False
+    CURRENT_AI_API_KEY = new_key.strip()
+    logger.info("AI API key updated (not shown for security).")
+    return True
+
 # Flask app initialization
 app = Flask(__name__)
 
@@ -316,6 +336,32 @@ def admin_only(func):
             
         return await func(update, context, *args, **kwargs)
     return wrapped
+
+@admin_only
+async def set_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Usage: /setmodel <model-name>")
+        return
+    new_model = " ".join(context.args).strip()
+    if set_ai_model(new_model):
+        await update.message.reply_text(
+            f"✅ AI model updated to: <code>{CURRENT_AI_MODEL}</code>",
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await update.message.reply_text("❌ Failed to update model. Provide a valid model name.")
+
+@admin_only
+async def set_apikey_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Never echo back the API key!
+    if not context.args:
+        await update.message.reply_text("Usage: /setapikey <API-key>")
+        return
+    new_key = " ".join(context.args).strip()
+    if set_ai_api_key(new_key):
+        await update.message.reply_text("✅ AI API key updated successfully.")
+    else:
+        await update.message.reply_text("❌ Failed to update API key. Provide a valid key.")
 
 # ---- Slowmode control command (admins only) ----
 
@@ -671,13 +717,10 @@ def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str,
 # Updated load_llm function to use Groq API
 async def load_llm():
     try:
-        logger.info(f"Using Groq API with model: {GROQ_MODEL}")
-        
-        if not TOGETHER_API_KEY:  # Still using the TOGETHER_API_KEY variable name for now
-            logger.error("GROQ_API_KEY is not set. Please set it in .env file or environment variables.")
-            raise ValueError("GROQ_API_KEY is required")
-        
-        # Return a basic structure to confirm Groq setup
+        logger.info(f"Using Groq API with model: {CURRENT_AI_MODEL}")
+        if not CURRENT_AI_API_KEY:
+            logger.error("AI API key is not set. Please set it with /setapikey.")
+            raise ValueError("AI API key is required")
         return {"groq_client": True}
     except Exception as e:
         logger.error(f"Error initializing Groq client: {str(e)}")
@@ -1121,6 +1164,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def build_prompt(question: str, context_text: str) -> str:
     return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
+    - **NEVER** send what you're **thinking** just send the processed output mentioned as below.
     - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
     - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
@@ -1165,25 +1209,16 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
 async def generate_response(prompt: str, _, __=None) -> str:
     try:
         logger.info("Sending request to Groq API...")
-        
-        # Import groq only when needed
         import groq
-        
-        # Initialize Groq client
-        client = groq.AsyncGroq(api_key=TOGETHER_API_KEY)  # Using the existing variable name but it now contains Groq API key
-        
-        # Use chat completions with proper formatting
+        client = groq.AsyncGroq(api_key=CURRENT_AI_API_KEY)
         chat_completion = await client.chat.completions.create(
-            model=GROQ_MODEL,  # Use the configured Groq model
+            model=CURRENT_AI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
-            max_tokens=800,  # Increased token count but still within safe limits
+            max_tokens=800,
             top_p=0.95
         )
-        
-        # Extract the response
         answer = chat_completion.choices[0].message.content
-        
         logger.info("Received response from Groq API")
         return answer.strip()
     except Exception as e:
@@ -1443,6 +1478,8 @@ async def main():
         # Standard command handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", start))
+        application.add_handler(CommandHandler("setmodel", set_model_command))   # <--- PATCH: Add this line
+        application.add_handler(CommandHandler("setapikey", set_apikey_command)) # <--- PATCH: Add this line
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
