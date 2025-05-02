@@ -355,7 +355,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Get bot token from environment variable, with a fallback for backward compatibility
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "6614402193:AAGlYmVhWoD-JypMLvc6sxlNiQ7t2-yUYQQ")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "6614402193:AAF2MqqFsGznqSllQTvGyLQUjEG9WsIQIfk")
 bot_token = BOT_TOKEN
 
 # Check if token is available
