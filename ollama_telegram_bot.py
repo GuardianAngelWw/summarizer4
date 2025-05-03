@@ -800,106 +800,6 @@ def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
     scheduler.start()
     logger.info("Scheduled daily CSV backup to logs channel.")
 
-'''def get_categories() -> List[str]:
-    """Get the list of categories."""
-    try:
-        with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("categories", [])
-    except Exception as e:
-        logger.error(f"Error reading categories: {str(e)}")
-        return ["General"]
-        
-def add_category(category: str) -> bool:
-    """Add a new category."""
-    if not category:
-        return False
-        
-    categories = get_categories()
-    if category in categories:
-        return True
-        
-    categories.append(category)
-    try:
-        with open(CATEGORIES_FILE, "w", encoding="utf-8") as f:
-            json.dump({"categories": categories}, f)
-        return True
-    except Exception as e:
-        logger.error(f"Error writing categories: {str(e)}")
-        return False '''
-
-'''def read_entries(category: Optional[str] = None) -> List[Dict[str, str]]:
-    """Read entries from the CSV file with optional filtering by category only."""
-    entries = []
-    try:
-        with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                # Fill in missing fields
-                if "category" not in row:
-                    row["category"] = "General"
-                # Remove group_id if present from previous versions
-                row.pop("group_id", None)
-                if category is not None and row["category"] != category:
-                    continue
-                entries.append(row)
-    except Exception as e:
-        logger.error(f"Error reading entries: {str(e)}")
-    return entries
-
-def write_entries(entries: List[Dict[str, str]]) -> bool:
-    """Write entries to the CSV file (category only, no group_id)."""
-    try:
-        with open(ENTRIES_FILE, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-            writer.writeheader()
-            writer.writerows(entries)
-        return True
-    except Exception as e:
-        logger.error(f"Error writing entries: {str(e)}")
-        return False
-
-def add_entry(text: str, link: str, category: str = "General") -> bool:
-    """Add a new entry (no group-specific logic)."""
-    entries = read_entries()
-    for entry in entries:
-        if entry["text"] == text and entry["link"] == link:
-            return False
-    add_category(category)
-    new_entry = {
-        "text": text,
-        "link": link,
-        "category": category
-    }
-    entries.append(new_entry)
-    return write_entries(entries)
-
-def delete_entry(index: int) -> bool:
-    """Delete an entry from the CSV file."""
-    entries = read_entries()
-    if 0 <= index < len(entries):
-        entries.pop(index)
-        return write_entries(entries)
-    return False
-
-def clear_all_entries(category: Optional[str] = None) -> int:
-    """Clear all entries, optionally filtered by category only."""
-    all_entries = read_entries()
-    if category is None:
-        count = len(all_entries)
-        return count if write_entries([]) else 0
-    entries_to_keep = []
-    count = 0
-    for entry in all_entries:
-        if entry["category"] != category:
-            entries_to_keep.append(entry)
-        else:
-            count += 1
-    if count > 0:
-        success = write_entries(entries_to_keep)
-        return count if success else 0
-    return 0 '''
-
 # Search functionality is now handled by storage.search_entries using SQLite FTS5
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
@@ -1586,9 +1486,9 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             await file.download_to_drive(temp_file.name)
             file_path = temp_file.name
-        file_content = ""
-        rows_parsed = []
         try:
+            rows_parsed = []
+            file_content = ""
             with open(file_path, "r", encoding="utf-8") as f:
                 file_content = f.read()
         except UnicodeDecodeError:
