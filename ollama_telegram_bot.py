@@ -42,12 +42,6 @@ try:
     from rapidfuzz import fuzz
 except ImportError:
     raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
-# ==== SEMANTIC SEARCH IMPORTS (NEW) ====
-try:
-    from sentence_transformers import SentenceTransformer, util
-    SEMANTIC_MODEL_AVAILABLE = True
-except ImportError:
-    SEMANTIC_MODEL_AVAILABLE = False
 # No need for duplicate imports as they're already defined above
 
 # Global variable for slowmode seconds (default)
@@ -217,7 +211,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6642970632:AAGwevXqtbtl3iKZuFg9iDOLQj-UUQKrbq8"
+BOT_TOKEN = "6642970632:AAFaSQclGGu2XckN1ICda47rOmzlu6U353g"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -644,50 +638,6 @@ def clear_all_entries(category: Optional[str] = None) -> int:
     return 0
 
 # --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
-# --- PATCH: SEMANTIC EMBEDDINGS CACHE ---
-_semantic_model = None
-_entry_embeddings = None
-_EMBEDDINGS_LAST_N = 400  # Only cache last N for memory, tweak if needed
-
-def get_semantic_model():
-    global _semantic_model
-    if not SEMANTIC_MODEL_AVAILABLE:
-        return None
-    if _semantic_model is None:
-        _semantic_model = SentenceTransformer("all-MiniLM-L6-v2")  # Fast, accurate, 80MB RAM
-    return _semantic_model
-
-def compute_entry_embeddings(entries):
-    """
-    Compute or retrieve entry embeddings for semantic search. Returns list of tuples:
-    (entry, embedding)
-    """
-    global _entry_embeddings
-    model = get_semantic_model()
-    if model is None:
-        return []
-    # Only recompute if cache invalid or changed
-    if _entry_embeddings is not None and len(_entry_embeddings) == len(entries):
-        return _entry_embeddings
-    texts = [f"{entry['text']} [cat:{entry['category']}]" for entry in entries]
-    embeddings = model.encode(texts, convert_to_tensor=True, show_progress_bar=False)
-    _entry_embeddings = list(zip(entries, embeddings))
-    return _entry_embeddings
-
-def semantic_similarity_search(query, entries, top_n=8):
-    """
-    Returns top_n entries most semantically similar to query.
-    """
-    if not SEMANTIC_MODEL_AVAILABLE:
-        return []
-    model = get_semantic_model()
-    if model is None or not entries:
-        return []
-    entry_embeds = compute_entry_embeddings(entries)
-    query_emb = model.encode(query, convert_to_tensor=True)
-    scores = util.pytorch_cos_sim(query_emb, [emb for _, emb in entry_embeds])[0]
-    top_idxs = scores.topk(top_n).indices.tolist()
-    return [entry_embeds[i][0] for i in top_idxs]
 
 def search_entries_advanced(
     query: str,
@@ -697,13 +647,18 @@ def search_entries_advanced(
     score_threshold: int = 50
 ) -> List[Dict[str, str]]:
     """
-    Advanced fuzzy search with fallback to semantic similarity.
+    Advanced fuzzy search in entries with keyword and full-query relevance.
+    - Tokenizes query and boosts entries matching more keywords.
+    - Allows threshold adjustment.
+    - Further boosts entries that match all words in the query.
+    - Guarantees at least min_results (if available).
     """
     entries = read_entries(category=category)
     if not query:
-        return entries[:top_n]
+        return entries[:top_n]  # Return first N if no query
 
     query = query.strip().lower()
+    # Tokenize query into keywords (words of length >= 2)
     keywords = [word for word in re.findall(r'\w+', query) if len(word) > 1]
     keyword_set = set(keywords)
 
@@ -711,17 +666,25 @@ def search_entries_advanced(
     for entry in entries:
         text = entry["text"].lower()
         cat = entry.get("category", "").lower()
+
+        # Fuzzy scores for full query
         score_text = fuzz.token_sort_ratio(query, text)
         score_cat = fuzz.token_sort_ratio(query, cat)
         score_partial_text = fuzz.partial_ratio(query, text)
         score_partial_cat = fuzz.partial_ratio(query, cat)
+
+        # Keyword-based scoring
         entry_words = set(re.findall(r'\w+', text + " " + cat))
         keyword_matches = keyword_set & entry_words
         keyword_match_count = len(keyword_matches)
+
+        # Boost if all query keywords are present
         all_keywords_in_entry = keyword_set.issubset(entry_words)
         keyword_boost = 10 * keyword_match_count
         if all_keywords_in_entry and keyword_set:
             keyword_boost += 20
+
+        # Composite score
         composite_score = (
             0.4 * score_text +
             0.2 * score_cat +
@@ -731,18 +694,18 @@ def search_entries_advanced(
         )
         scored.append((composite_score, entry))
 
+    # Sort by score, descending
     scored.sort(reverse=True, key=lambda x: x[0])
+
+    # Filter by threshold but ensure at least min_results
     filtered = [e for score, e in scored if score >= score_threshold]
     if len(filtered) < min_results:
         filtered = [e for _, e in scored[:max(top_n, min_results)]]
 
-    # --- PATCH: SEMANTIC FALLBACK ---
-    if (not filtered or all(fuzz.token_sort_ratio(query, e["text"].lower()) < 30 for e in filtered)) and SEMANTIC_MODEL_AVAILABLE:
-        logger.info("No good fuzzy match, using semantic similarity fallback.")
-        filtered = semantic_similarity_search(query, entries, top_n)
     return filtered[:top_n]
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Search for entries matching the query, with optional category filtering (no group)."""
     entries = read_entries(category=category)
     if not query:
         return entries
@@ -1520,7 +1483,6 @@ async def main():
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
-        application.add_handler(CommandHandler("rub", ask_question))  # Available to all users
         application.add_handler(CommandHandler("download", download_csv))  # Admin-only
         application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
