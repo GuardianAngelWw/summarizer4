@@ -193,7 +193,7 @@ class EntryStorage:
             entry_id = entries[index]['id']
             with self._lock, self._get_conn() as conn:
                 c = conn.cursor()
-                c.execute('DELETE FROM entries WHERE rowid=?'', (entry_id,))
+                c.execute('DELETE FROM entries WHERE rowid=?', (entry_id,))
                 conn.commit()
                 return c.rowcount > 0
         return False
