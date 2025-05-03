@@ -29,3 +29,4 @@ storage
 # SQLite FTS5 search now used instead of fuzzy matching
 sentence-transformers 
 torch
+rapidfuzz
