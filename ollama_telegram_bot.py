@@ -198,7 +198,7 @@ class EntryStorage:
                 return c.rowcount > 0
         return False
 
-     def search_entries(self, query: str, category: Optional[str] = None, top_n: int = 8) -> list:
+    def search_entries(self, query: str, category: Optional[str] = None, top_n: int = 8) -> list:
         with self._get_conn() as conn:
             c = conn.cursor()
             
@@ -1535,33 +1535,6 @@ async def request_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "Please choose the type of file you want to upload:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-
-async def handle_upload_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle selection of upload file type."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data.split(":")[1]
-    
-    if data == "csv":
-        categories = storage.get_categories()
-        category_list = ", ".join(categories)
-        
-        await query.edit_message_text(
-            "Please upload your CSV file as a reply to this message.\n\n"
-            f"The file should have these columns: 'text', 'link', 'category'\n\n"
-            f"Available categories: {category_list}\n"
-        )
-        context.user_data["awaiting_csv"] = True
-        
-    elif data == "db":
-        await query.edit_message_text(
-            "Please upload your SQLite database file (.db) as a reply to this message.\n\n"
-            "This will replace the current database. All entries will be updated "
-            "based on the uploaded file.\n\n"
-            "⚠️ WARNING: This operation cannot be undone. Make sure to download a backup first."
-        )
-        context.user_data["awaiting_db"] = True
     
 async def handle_upload_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle selection of upload file type."""
@@ -1746,43 +1719,6 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 else:
                     skipped_count += 1
             message = f"✅ Added {added_count} new entries (skipped {skipped_count} duplicates)."
-        await query.edit_message_text(message)
-    except Exception as e:
-        logger.error(f"Error handling CSV action: {str(e)}")
-        await query.edit_message_text(f"Error: {str(e)}")
-
-async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    action = query.data.split(":", 1)[1]
-    if action == "cancel":
-        await query.edit_message_text("CSV import canceled.")
-        return
-    uploaded_entries = context.user_data.get("uploaded_entries", [])
-    if not uploaded_entries:
-        await query.edit_message_text("No entries to process.")
-        return
-    try:
-        if action == "replace":
-            success = write_entries(uploaded_entries)
-            message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
-        elif action == "append":
-            current_entries = read_entries()
-            new_entries = []
-            existing_count = 0
-            for entry in uploaded_entries:
-                is_duplicate = False
-                for existing in current_entries:
-                    if (existing["text"] == entry["text"] and 
-                        existing["link"] == entry["link"]):
-                        is_duplicate = True
-                        existing_count += 1
-                        break
-                if not is_duplicate:
-                    new_entries.append(entry)
-            combined_entries = current_entries + new_entries
-            success = write_entries(combined_entries)
-            message = f"✅ Added {len(new_entries)} new entries (skipped {existing_count} duplicates)." if success else "❌ Failed to update entries."
         await query.edit_message_text(message)
     except Exception as e:
         logger.error(f"Error handling CSV action: {str(e)}")
