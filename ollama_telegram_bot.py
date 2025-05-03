@@ -177,13 +177,23 @@ class EntryStorage:
             return entries[index]
         return None
 
+    def clear_entries(self, category: Optional[str] = None) -> bool:
+        with self._lock, self._get_conn() as conn:
+            c = conn.cursor()
+            if category:
+                c.execute('DELETE FROM entries WHERE category=?', (category,))
+            else:
+                c.execute('DELETE FROM entries')
+            conn.commit()
+        return True
+
     def delete_entry_by_index(self, index: int) -> bool:
         entries = self.get_entries()
         if 0 <= index < len(entries):
             entry_id = entries[index]['id']
             with self._lock, self._get_conn() as conn:
                 c = conn.cursor()
-                c.execute('DELETE FROM entries WHERE rowid=?', (entry_id,))
+                c.execute('DELETE FROM entries WHERE rowid=?'', (entry_id,))
                 conn.commit()
                 return c.rowcount > 0
         return False
@@ -500,24 +510,101 @@ async def download_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @admin_only
 async def handle_db_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message.reply_to_message and update.message.document:
+        context.user_data["awaiting_db"] = True
+    if not context.user_data.get("awaiting_db"):
+        return
+    context.user_data["awaiting_db"] = False
+    
     if not update.message.document:
         await update.message.reply_text("Please upload an SQLite database file (.db).")
         return
+        
     document = update.message.document
     if not document.file_name.lower().endswith(".db"):
         await update.message.reply_text("Please upload a file ending with .db")
         return
-    file = await context.bot.get_file(document.file_id)
-    db_path = "entries.db"
-    temp_path = db_path + ".upload"
-    await file.download_to_drive(temp_path)
+        
+    processing_status = await update.message.reply_text("⏳ Processing your uploaded database file...")
+    
     try:
-        os.replace(temp_path, db_path)
-        await update.message.reply_text("✅ Database file replaced successfully. Please /restart the bot if you want changes to take effect.")
+        file = await context.bot.get_file(document.file_id)
+        db_path = "entries.db"
+        backup_path = db_path + ".backup"
+        temp_path = db_path + ".upload"
+        
+        # Download the uploaded file
+        await file.download_to_drive(temp_path)
+        
+        # Verify the uploaded file is a valid SQLite database with expected schema
+        try:
+            conn = sqlite3.connect(temp_path)
+            cursor = conn.cursor()
+            
+            # Check if it has the expected tables
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' OR type='virtual table';")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            if 'entries' not in tables or 'categories' not in tables:
+                await processing_status.edit_text(
+                    "❌ The uploaded file is not a valid entries database. "
+                    "It's missing required tables (entries or categories)."
+                )
+                conn.close()
+                os.remove(temp_path)
+                return
+                
+            # Check if entries has the expected columns
+            try:
+                cursor.execute("SELECT rowid, text, link, category FROM entries LIMIT 1")
+                conn.close()
+                
+                # Create backup of current database
+                if os.path.exists(db_path):
+                    shutil.copy2(db_path, backup_path)
+                    
+                # Replace the current database
+                os.replace(temp_path, db_path)
+                
+                # Reload the storage to use the new database
+                storage._init_db()
+                
+                # Get entry count for feedback
+                new_entries = storage.get_entries()
+                category_counts = {}
+                for entry in new_entries:
+                    cat = entry.get('category', 'General')
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                
+                category_info = "\n".join([f"- {cat}: {count} entries" for cat, count in category_counts.items()])
+                
+                await processing_status.edit_text(
+                    f"✅ Database file successfully uploaded and applied!\n"
+                    f"Total entries: {len(new_entries)}\n\n"
+                    f"Entries by category:\n{category_info}"
+                )
+                
+            except sqlite3.Error:
+                conn.close()
+                await processing_status.edit_text(
+                    "❌ The uploaded database doesn't have the expected structure."
+                )
+                os.remove(temp_path)
+                
+        except sqlite3.Error as e:
+            await processing_status.edit_text(f"❌ Invalid SQLite database file: {str(e)}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+                
     except Exception as e:
-        await update.message.reply_text(f"Error replacing database: {str(e)}")
+        logger.error(f"Error processing database upload: {str(e)}")
+        try:
+            await processing_status.edit_text(f"❌ Error processing the uploaded file: {str(e)}")
+        except:
+            await update.message.reply_text(f"❌ Error processing the uploaded file: {str(e)}")
+        
         if os.path.exists(temp_path):
-            os.unlink(temp_path)
+            os.remove(temp_path)
 
 async def send_db_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
     """Send the SQLite DB file to the specified Telegram channel."""
@@ -1385,29 +1472,106 @@ async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAUL
 
 @admin_only
 async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not os.path.exists(ENTRIES_FILE):
-        await update.message.reply_text("No entries file exists yet.")
+    # Export the database to CSV
+    entries = storage.get_entries()
+    if not entries:
+        await update.message.reply_text("No entries found in the database.")
         return
-    await update.message.reply_document(
-        document=open(ENTRIES_FILE, "rb"),
-        filename="entries.csv",
-        caption="Here's your complete knowledge base CSV file."
-    )
+    
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".csv", encoding="utf-8") as tmp_file:
+        fieldnames = ["text", "link", "category"]
+        writer = csv.DictWriter(tmp_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for entry in entries:
+            writer.writerow({
+                "text": entry["text"],
+                "link": entry["link"],
+                "category": entry["category"]
+            })
+        tmp_path = tmp_file.name
+    
+    try:
+        await update.message.reply_document(
+            document=open(tmp_path, "rb"),
+            filename="entries.csv",
+            caption="Here's your complete knowledge base as a CSV file."
+        )
+    finally:
+        # Clean up the temporary file
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
 
-'''@admin_only
-async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Request the user to upload a CSV file."""
+@admin_only
+async def request_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Request the user to upload a file (CSV or SQLite DB)."""
     categories = storage.get_categories()
     category_list = ", ".join(categories)
     
+    keyboard = [
+        [InlineKeyboardButton("CSV File", callback_data="upload:csv"),
+         InlineKeyboardButton("SQLite DB", callback_data="upload:db")]
+    ]
+    
     await update.message.reply_text(
-        "Please upload your CSV file as a reply to this message.\n\n"
-        f"The file should have these columns: 'text', 'link', 'category', 'group_id'\n\n"
-        f"Available categories: {category_list}\n\n"
-        "If you're adding entries for this group, leave group_id empty."
+        "Please choose the type of file you want to upload:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    # Set the expected state
-    context.user_data["awaiting_csv"] = True
+
+async def handle_upload_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle selection of upload file type."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data.split(":")[1]
+    
+    if data == "csv":
+        categories = storage.get_categories()
+        category_list = ", ".join(categories)
+        
+        await query.edit_message_text(
+            "Please upload your CSV file as a reply to this message.\n\n"
+            f"The file should have these columns: 'text', 'link', 'category'\n\n"
+            f"Available categories: {category_list}\n"
+        )
+        context.user_data["awaiting_csv"] = True
+        
+    elif data == "db":
+        await query.edit_message_text(
+            "Please upload your SQLite database file (.db) as a reply to this message.\n\n"
+            "This will replace the current database. All entries will be updated "
+            "based on the uploaded file.\n\n"
+            "⚠️ WARNING: This operation cannot be undone. Make sure to download a backup first."
+        )
+        context.user_data["awaiting_db"] = True
+    
+async def handle_upload_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle selection of upload file type."""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data.split(":")[1]
+    
+    if data == "csv":
+        categories = storage.get_categories()
+        category_list = ", ".join(categories)
+        
+        await query.edit_message_text(
+            "Please upload your CSV file as a reply to this message.\n\n"
+            f"The file should have these columns: 'text', 'link', 'category'\n\n"
+            f"Available categories: {category_list}\n"
+        )
+        context.user_data["awaiting_csv"] = True
+        
+    elif data == "db":
+        await query.edit_message_text(
+            "Please upload your SQLite database file (.db) as a reply to this message.\n\n"
+            "This will replace the current database. All entries will be updated "
+            "based on the uploaded file.\n\n"
+            "⚠️ WARNING: This operation cannot be undone. Make sure to download a backup first."
+        )
+        context.user_data["awaiting_db"] = True
 
 @admin_only
 async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1421,6 +1585,10 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     document = update.message.document
     file_name = document.file_name.lower() if document.file_name else "unnamed.file"
+    if not file_name.endswith(".csv"):
+        await update.message.reply_text("Please upload a file with .csv extension.")
+        return
+    
     uploaded_entries = []
     processing_status = await update.message.reply_text("⏳ Processing your uploaded file...")
     try:
@@ -1439,11 +1607,15 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     file_content = f.read()
             except Exception as e:
                 await processing_status.edit_text(f"Error reading file: {str(e)}")
+                if os.path.exists(file_path):
+                    os.unlink(file_path)
                 return
         if not any(separator in file_content for separator in [",", "\t", ";"]):
             await processing_status.edit_text(
                 "The uploaded file doesn't appear to be in CSV format. Expected comma, tab, or semicolon delimiters."
             )
+            if os.path.exists(file_path):
+                os.unlink(file_path)
             return
         for delimiter in [",", "\t", ";"]:
             try:
@@ -1464,6 +1636,8 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 "Could not find required 'text' and 'link' columns in the CSV. "
                 "Please check the file format and try again."
             )
+            if os.path.exists(file_path):
+                os.unlink(file_path)
             return
         # Process the successfully parsed rows
         for i, row in enumerate(rows_parsed, 1):
@@ -1481,10 +1655,12 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 uploaded_entries.append(new_entry)
             except Exception as row_error:
                 logger.error(f"Error processing row {i}: {str(row_error)}")
-        try:
-            os.unlink(file_path)
-        except Exception as e:
-            logger.error(f"Error cleaning up temp file: {str(e)}")
+        if os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except Exception as e:
+                logger.error(f"Error cleaning up temp file: {str(e)}")
+                
         if not uploaded_entries:
             await processing_status.edit_text("No valid entries found in the CSV file.")
             return
@@ -1506,6 +1682,47 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except:
             pass
         await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
+        if os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except:
+                pass
+
+async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    action = query.data.split(":", 1)[1]
+    if action == "cancel":
+        await query.edit_message_text("CSV import canceled.")
+        return
+    uploaded_entries = context.user_data.get("uploaded_entries", [])
+    if not uploaded_entries:
+        await query.edit_message_text("No entries to process.")
+        return
+    try:
+        if action == "replace":
+            # Clear all existing entries before adding new ones
+            storage.clear_entries()
+            success = True
+            added_count = 0
+            for entry in uploaded_entries:
+                if storage.add_entry(entry["text"], entry["link"], entry["category"]):
+                    added_count += 1
+            message = f"✅ Successfully replaced all entries with {added_count} new entries."
+        elif action == "append":
+            # Add entries one by one
+            added_count = 0
+            skipped_count = 0
+            for entry in uploaded_entries:
+                if storage.add_entry(entry["text"], entry["link"], entry["category"]):
+                    added_count += 1
+                else:
+                    skipped_count += 1
+            message = f"✅ Added {added_count} new entries (skipped {skipped_count} duplicates)."
+        await query.edit_message_text(message)
+    except Exception as e:
+        logger.error(f"Error handling CSV action: {str(e)}")
+        await query.edit_message_text(f"Error: {str(e)}")
 
 async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1614,27 +1831,35 @@ async def main():
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
-        application.add_handler(CommandHandler("download", download_db))  # Admin-only
-        application.add_handler(CommandHandler("upload", handle_db_upload))  # Admin-only
+        application.add_handler(CommandHandler("download", download_db))  # Admin-only db download
+        application.add_handler(CommandHandler("download_csv", download_csv))  # Admin-only CSV export
+        application.add_handler(CommandHandler("upload", request_upload))  # Admin-only upload selection
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
         application.add_handler(CommandHandler("here", here_command))  # Available to all users
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
         application.add_handler(CommandHandler("s", show_entry_command))
         application.add_handler(CommandHandler("i", insert_entry_command))
         application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
-#        application.add_handler(CommandHandler("download_db", download_db))
+        
+        # File upload handlers
         application.add_handler(MessageHandler(
             filters.Document.FileExtension(".db") & filters.REPLY,
             handle_db_upload
         ))
+        application.add_handler(MessageHandler(
+            filters.Document.FileExtension(".csv") & filters.REPLY,
+            handle_csv_upload
+        ))
+        
         # Enhanced callback query handlers
+        application.add_handler(CallbackQueryHandler(handle_upload_selection, pattern=r"^upload:"))
+        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cat:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
-#        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
         # Start health check server (if needed)
         # Note: We comment this out because the run_health_server function might not exist
