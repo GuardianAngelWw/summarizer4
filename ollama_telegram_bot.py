@@ -1613,12 +1613,12 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             storage.write_entries(merged_entries)
             message = f"✅ Merged {added_count} new entries (skipped {skipped_count} duplicates)."
         await query.edit_message_text(message)
-            for entry in uploaded_entries:
-                if storage.add_entry(entry["text"], entry["link"], entry["category"]):
-                    added_count += 1
-                else:
-                    skipped_count += 1
-            message = f"✅ Added {added_count} new entries (skipped {skipped_count} duplicates)."
+        for entry in uploaded_entries:
+            if storage.add_entry(entry["text"], entry["link"], entry["category"]):
+                added_count += 1
+            else:
+                skipped_count += 1
+        message = f"✅ Added {added_count} new entries (skipped {skipped_count} duplicates)."
         await query.edit_message_text(message)
     except Exception as e:
         logger.error(f"Error handling CSV action: {str(e)}")
