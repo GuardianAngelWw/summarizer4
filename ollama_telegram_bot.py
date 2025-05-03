@@ -569,13 +569,19 @@ async def handle_db_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             try:
                 cursor.execute("SELECT rowid, text, link, category FROM entries LIMIT 1")
                 conn.close()
+                # Provide an option to append or replace existing entries in the database
+                context.user_data["db_append_mode"] = True
                 
                 # Create backup of current database
                 if os.path.exists(db_path):
                     shutil.copy2(db_path, backup_path)
                     
                 # Replace the current database
-                os.replace(temp_path, db_path)
+                if context.user_data.get("db_append_mode"):
+                    # Append new entries from uploaded DB to existing DB
+                    storage.append_entries_from_db(temp_path)
+                else:
+                    os.replace(temp_path, db_path)
                 
                 # Reload the storage to use the new database
                 storage._init_db()
@@ -1680,7 +1686,8 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard = [
             [
                 InlineKeyboardButton("Replace All", callback_data="csv:replace"),
-                InlineKeyboardButton("Append", callback_data="csv:append"),
+                InlineKeyboardButton("Append Entries", callback_data="csv:append"),
+                InlineKeyboardButton("Merge and Deduplicate", callback_data="csv:merge"),
             ],
             [InlineKeyboardButton("Cancel", callback_data="csv:cancel")]
         ]
@@ -1724,6 +1731,15 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             # Add entries one by one
             added_count = 0
             skipped_count = 0
+        elif action == "merge":
+            # Merge uploaded entries with existing entries, ensuring no duplicates
+            current_entries = storage.get_entries()
+            merged_entries = storage.merge_entries(current_entries, uploaded_entries)
+            added_count = len(merged_entries) - len(current_entries)
+            skipped_count = len(uploaded_entries) - added_count
+            storage.write_entries(merged_entries)
+            message = f"✅ Merged {added_count} new entries (skipped {skipped_count} duplicates)."
+        await query.edit_message_text(message)
             for entry in uploaded_entries:
                 if storage.add_entry(entry["text"], entry["link"], entry["category"]):
                     added_count += 1
