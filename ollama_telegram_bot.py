@@ -1759,7 +1759,7 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(message)
     except Exception as e:
         logger.error(f"Error handling CSV action: {str(e)}")
-        await query.edit_message_text(f"Error: {str(e)}")'''
+        await query.edit_message_text(f"Error: {str(e)}")
 
 # Modify your main function to use the status monitor
 async def main():
