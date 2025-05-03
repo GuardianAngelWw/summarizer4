@@ -37,7 +37,17 @@ import logging.handlers
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import CommandHandler, CallbackQueryHandler
 # Groq API client will be imported as needed
-# Search is now handled by SQLite FTS5 through storage
+# Add fuzzy matching for advanced search-then-summarize (preferred: rapidfuzz)
+try:
+    from rapidfuzz import fuzz
+except ImportError:
+    raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
+# ==== SEMANTIC SEARCH IMPORTS (NEW) ====
+try:
+    from sentence_transformers import SentenceTransformer, util
+    SEMANTIC_MODEL_AVAILABLE = True
+except ImportError:
+    SEMANTIC_MODEL_AVAILABLE = False
 # No need for duplicate imports as they're already defined above
 
 # Global variable for slowmode seconds (default)
@@ -45,35 +55,6 @@ SLOWMODE_SECONDS = 3  # Default, can be changed via /slowmode command
 
 # Per-user per-command last called tracking (in-memory)
 _user_command_timestamps: Dict[Tuple[int, str], float] = {}
-
-# --- Add command logging decorator function ---
-def log_command(func):
-    @wraps(func)
-    async def wrapper(update, context, *args, **kwargs):
-        user = update.effective_user
-        if not user:
-            logger.warning(f"Command received with no effective_user")
-            return await func(update, context, *args, **kwargs)
-            
-        username = f"@{user.username}" if user.username else f"{user.first_name}"
-        user_id = user.id
-        command = update.message.text if update.message else "(callback)"
-        
-        logger.info(f"Command received: {command} from user {username} (ID: {user_id})")
-        
-        try:
-            return await func(update, context, *args, **kwargs)
-        except Exception as e:
-            logger.error(f"Error executing command {command} from {username}: {str(e)}", exc_info=True)
-            # Try to notify the user about the error
-            try:
-                if update.message and hasattr(update.message, 'reply_text'):
-                    await update.message.reply_text(f"⚠️ Error processing your command: {str(e)}")
-            except Exception:
-                pass  # If we can't reply, just log and continue
-            raise
-            
-    return wrapper
 
 def set_slowmode(seconds: int):
     global SLOWMODE_SECONDS
@@ -111,142 +92,6 @@ def rate_limit(key_func: Optional[Callable] = None):
             return await func(update, context, *args, **kwargs)
         return wrapper
     return decorator
-
-# --- SQLite Storage Layer (add this section before your handlers, after imports) ---
-import sqlite3
-import threading
-
-class EntryStorage:
-    def __init__(self, db_path="entries.db"):
-        self.db_path = db_path
-        self._lock = threading.Lock()
-        self._init_db()
-
-    def _get_conn(self):
-        return sqlite3.connect(self.db_path, check_same_thread=False)
-
-    def _init_db(self):
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute('CREATE VIRTUAL TABLE IF NOT EXISTS entries USING FTS5(text, link, category)')
-            c.execute('CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY)')
-            c.execute('SELECT COUNT(*) FROM categories')
-            if c.fetchone()[0] == 0:
-                c.executemany('INSERT INTO categories (name) VALUES (?)',
-                              [('General',), ('Documentation',), ('Tutorials',), ('References',)])
-            conn.commit()
-
-    def add_entry(self, text: str, link: str, category: str = "General") -> bool:
-        with self._lock, self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute('SELECT 1 FROM entries WHERE text=? AND link=?', (text, link))
-            if c.fetchone():
-                return False
-            c.execute('INSERT INTO entries (text, link, category) VALUES (?, ?, ?)', (text, link, category))
-            c.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
-            conn.commit()
-        return True
-
-    def insert_entry_at(self, index: int, text: str, link: str, category: str = "General") -> bool:
-        with self._lock, self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute('SELECT text, link, category FROM entries ORDER BY rowid')
-            entries = c.fetchall()
-            new_row = (text, link, category)
-            if index < 0 or index > len(entries):
-                return False
-            entries = entries[:index] + [new_row] + entries[index:]
-            c.execute('DELETE FROM entries')
-            c.executemany('INSERT INTO entries (text, link, category) VALUES (?, ?, ?)', entries)
-            c.execute('INSERT OR IGNORE INTO categories (name) VALUES (?)', (category,))
-            conn.commit()
-        return True
-
-    def get_entries(self, category: Optional[str] = None) -> list:
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            if category:
-                c.execute('SELECT rowid, text, link, category FROM entries WHERE category=? ORDER BY rowid', (category,))
-            else:
-                c.execute('SELECT rowid, text, link, category FROM entries ORDER BY rowid')
-            return [{"id": row[0], "text": row[1], "link": row[2], "category": row[3]} for row in c.fetchall()]
-
-    def get_entry_by_index(self, index: int) -> Optional[dict]:
-        entries = self.get_entries()
-        if 0 <= index < len(entries):
-            return entries[index]
-        return None
-
-    def clear_entries(self, category: Optional[str] = None) -> bool:
-        with self._lock, self._get_conn() as conn:
-            c = conn.cursor()
-            if category:
-                c.execute('DELETE FROM entries WHERE category=?', (category,))
-            else:
-                c.execute('DELETE FROM entries')
-            conn.commit()
-        return True
-
-    def delete_entry_by_index(self, index: int) -> bool:
-        entries = self.get_entries()
-        if 0 <= index < len(entries):
-            entry_id = entries[index]['id']
-            with self._lock, self._get_conn() as conn:
-                c = conn.cursor()
-                c.execute('DELETE FROM entries WHERE rowid=?', (entry_id,))
-                conn.commit()
-                return c.rowcount > 0
-        return False
-
-    def search_entries(self, query: str, category: Optional[str] = None, top_n: int = 8) -> list:
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            
-            # Sanitize and preprocess the query
-            match_query = query.replace('"', '""')  # Escape double quotes for FTS5 queries
-            
-            # Construct the WHERE clause dynamically
-            where_clause = f'entries MATCH "{match_query}"'
-            if category:
-                where_clause += f' AND category="{category}"'
-            
-            try:
-                # Execute the query
-                c.execute(f'SELECT rowid, text, link, category FROM entries WHERE {where_clause} ORDER BY rank LIMIT ?', (top_n,))
-                return [{"id": row[0], "text": row[1], "link": row[2], "category": row[3]} for row in c.fetchall()]
-            except sqlite3.OperationalError as e:
-                logger.error(f"Error in search_entries: {str(e)}")
-                return []   
-
-    def clear_entries(self, category: Optional[str] = None) -> int:
-        with self._lock, self._get_conn() as conn:
-            c = conn.cursor()
-            if category:
-                c.execute('DELETE FROM entries WHERE category=?', (category,))
-            else:
-                c.execute('DELETE FROM entries')
-            affected = c.rowcount
-            conn.commit()
-            return affected
-
-    def get_categories(self) -> list:
-        with self._get_conn() as conn:
-            c = conn.cursor()
-            c.execute('SELECT name FROM categories ORDER BY name')
-            return [row[0] for row in c.fetchall()]
-
-    def add_category(self, category: str) -> bool:
-        with self._lock, self._get_conn() as conn:
-            c = conn.cursor()
-            try:
-                c.execute('INSERT INTO categories (name) VALUES (?)', (category,))
-                conn.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
-
-# Instantiate the storage object after this class
-storage = EntryStorage()
 
 # Add these constants at the top of your file
 STARTUP_MESSAGE = """
@@ -372,17 +217,8 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-# Load environment variables
-load_dotenv()
-
-# Get bot token from environment variable, with a fallback for backward compatibility
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "6614402193:AAH6s6YLRCY0bnjT1-844FuGYJvjhkUyFDg")
+BOT_TOKEN = "6642970632:AAGwevXqtbtl3iKZuFg9iDOLQj-UUQKrbq8"
 bot_token = BOT_TOKEN
-
-# Check if token is available
-if not BOT_TOKEN:
-    logging.error("TELEGRAM_BOT_TOKEN environment variable not set. Please set it in your .env file.")
-    sys.exit(1)
 
 # Modify the logging setup (around line 55)
 if not logging.getLogger().handlers:
@@ -508,196 +344,6 @@ def admin_only(func):
     return wrapped
 
 @admin_only
-async def download_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    db_path = "entries.db"
-    if not os.path.exists(db_path):
-        await update.message.reply_text("No entries database found.")
-        return
-    await update.message.reply_document(
-        document=open(db_path, "rb"),
-        filename="entries.db",
-        caption="Here's your complete knowledge base database file."
-    )
-
-@admin_only
-async def handle_db_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message.reply_to_message and update.message.document:
-        context.user_data["awaiting_db"] = True
-    if not context.user_data.get("awaiting_db"):
-        return
-    context.user_data["awaiting_db"] = False
-    
-    if not update.message.document:
-        await update.message.reply_text("Please upload an SQLite database file (.db).")
-        return
-        
-    document = update.message.document
-    if not document.file_name.lower().endswith(".db"):
-        await update.message.reply_text("Please upload a file ending with .db")
-        return
-        
-    processing_status = await update.message.reply_text("⏳ Processing your uploaded database file...")
-    
-    try:
-        file = await context.bot.get_file(document.file_id)
-        db_path = "entries.db"
-        backup_path = db_path + ".backup"
-        temp_path = db_path + ".upload"
-        
-        # Download the uploaded file
-        await file.download_to_drive(temp_path)
-        
-        # Verify the uploaded file is a valid SQLite database with expected schema
-        try:
-            conn = sqlite3.connect(temp_path)
-            cursor = conn.cursor()
-            
-            # Check if it has the expected tables
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' OR type='virtual table';")
-            tables = [row[0] for row in cursor.fetchall()]
-            
-            if 'entries' not in tables or 'categories' not in tables:
-                await processing_status.edit_text(
-                    "❌ The uploaded file is not a valid entries database. "
-                    "It's missing required tables (entries or categories)."
-                )
-                conn.close()
-                os.remove(temp_path)
-                return
-                
-            # Check if entries has the expected columns
-            try:
-                cursor.execute("SELECT rowid, text, link, category FROM entries LIMIT 1")
-                conn.close()
-                # Provide an option to append or replace existing entries in the database
-                context.user_data["db_append_mode"] = True
-                
-                # Create backup of current database
-                if os.path.exists(db_path):
-                    shutil.copy2(db_path, backup_path)
-                    
-                # Replace the current database
-                if context.user_data.get("db_append_mode"):
-                    # Append new entries from uploaded DB to existing DB
-                    storage.append_entries_from_db(temp_path)
-                else:
-                    os.replace(temp_path, db_path)
-                
-                # Reload the storage to use the new database
-                storage._init_db()
-                
-                # Get entry count for feedback
-                new_entries = storage.get_entries()
-                category_counts = {}
-                for entry in new_entries:
-                    cat = entry.get('category', 'General')
-                    category_counts[cat] = category_counts.get(cat, 0) + 1
-                
-                category_info = "\n".join([f"- {cat}: {count} entries" for cat, count in category_counts.items()])
-                
-                await processing_status.edit_text(
-                    f"✅ Database file successfully uploaded and applied!\n"
-                    f"Total entries: {len(new_entries)}\n\n"
-                    f"Entries by category:\n{category_info}"
-                )
-                
-            except sqlite3.Error:
-                conn.close()
-                await processing_status.edit_text(
-                    "❌ The uploaded database doesn't have the expected structure."
-                )
-                os.remove(temp_path)
-                
-        except sqlite3.Error as e:
-            await processing_status.edit_text(f"❌ Invalid SQLite database file: {str(e)}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-                
-    except Exception as e:
-        logger.error(f"Error processing database upload: {str(e)}")
-        try:
-            await processing_status.edit_text(f"❌ Error processing the uploaded file: {str(e)}")
-        except:
-            await update.message.reply_text(f"❌ Error processing the uploaded file: {str(e)}")
-        
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-async def send_db_to_logs_channel(bot_token: str, file_path: str, channel_id: int):
-    """Send the SQLite DB file to the specified Telegram channel."""
-    try:
-        app = Application.builder().token(bot_token).build()
-        await app.bot.send_document(
-            chat_id=channel_id,
-            document=open(file_path, "rb"),
-            filename=os.path.basename(file_path),
-            caption="📦 Daily #backup: Current entries.db file."
-        )
-        await app.shutdown()
-        logger.info("Successfully sent daily DB backup to logs channel.")
-    except Exception as e:
-        logger.error(f"Error sending DB to logs channel: {str(e)}")
-
-def schedule_daily_db_backup(bot_token: str, file_path: str, channel_id: int):
-    """Schedule sending the DB file to the logs channel once every day."""
-    scheduler = BackgroundScheduler(timezone="UTC")
-    async def send_backup():
-        await send_db_to_logs_channel(bot_token, file_path, channel_id)
-    def job():
-        try:
-            asyncio.run(send_backup())
-        except Exception as e:
-            logger.error(f"Error in scheduled DB backup: {e}")
-    scheduler.add_job(job, "cron", hour=0, minute=10, id="daily_db_backup", replace_existing=True)
-    scheduler.start()
-    logger.info("Scheduled daily DB backup to logs channel.")
-
-@admin_only
-async def insert_entry_command(update, context):
-    text = update.message.text
-    match = re.match(r'/i\s+(\d+)\s+"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
-    if not match:
-        await update.message.reply_text('Usage:\n/i <row_number> "entry text" "link" "optional_category"\nExample:\n/i 3 "Some text" "https://example.com" "Category"')
-        return
-    row = int(match.group(1)) - 1
-    entry_text = match.group(2)
-    link = match.group(3)
-    category = match.group(4) if match.group(4) else "General"
-    if storage.insert_entry_at(row, entry_text, link, category):
-        await update.message.reply_text(f"✅ Inserted at row {row+1}:\nCategory: {category}\nText: {entry_text}\nLink: {link}")
-    else:
-        await update.message.reply_text("❌ Error: Invalid row or duplicate entry.")
-
-@admin_only
-async def show_entry_command(update, context):
-    args = context.args
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /s <entry_number>\nExample: /s 4")
-        return
-    idx = int(args[0]) - 1
-    entry = storage.get_entry_by_index(idx)
-    if not entry:
-        await update.message.reply_text(f"Entry #{args[0]} does not exist.")
-        return
-    msg = (f"<b>Entry #{idx+1}</b>\n"
-           f"<b>Category:</b> {entry['category']}\n"
-           f"<b>Text:</b>\n<blockquote>{entry['text']}</blockquote>\n"
-           f"<b>Link:</b> <a href='{entry['link']}'>{entry['link']}</a>")
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑️ Delete", callback_data=f"sdelete:{idx}")]
-    ])
-    await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
-
-@admin_only
-async def handle_single_entry_delete(update, context):
-    query = update.callback_query
-    idx = int(query.data.split(":", 1)[1])
-    if storage.delete_entry_by_index(idx):
-        await query.edit_message_text(f"✅ Entry #{idx+1} deleted successfully.")
-    else:
-        await query.answer("Failed to delete entry.", show_alert=True)
-
-@admin_only
 async def set_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text("Usage: /setmodel <model-name>")
@@ -739,6 +385,103 @@ async def slowmode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(
             f"Usage: /slowmode <seconds>\nCurrent: {get_slowmode()} seconds.")
 
+@admin_only  # Remove if you want all users to be able to use it
+async def insert_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Insert a new entry at the specified row (1-based index) in the CSV.
+    Usage: /i <number> "entry text" "link" "optional_category"
+    """
+    text = update.message.text
+    match = re.match(r'/i\s+(\d+)\s+"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
+    if not match:
+        await update.message.reply_text(
+            'Usage:\n'
+            '/i <row_number> "entry text" "link" "optional_category"\n'
+            'Example:\n'
+            '/i 3 "Some text" "https://example.com" "Category"'
+        )
+        return
+    row = int(match.group(1)) - 1  # Convert to zero-based index
+    entry_text = match.group(2)
+    link = match.group(3)
+    category = match.group(4) if match.group(4) else "General"
+
+    entries = read_entries()
+    if row < 0 or row > len(entries):
+        await update.message.reply_text(
+            f"Row number out of range. There are currently {len(entries)} entries. "
+            "Use /i <number> where number is between 1 and {len(entries)+1}."
+        )
+        return
+
+    # Check for duplicates (optional, just like add_entry logic)
+    for entry in entries:
+        if entry["text"] == entry_text and entry["link"] == link:
+            await update.message.reply_text("❌ Error: Entry already exists.")
+            return
+
+    # Ensure the category exists (or add it)
+    add_category(category)
+
+    new_entry = {
+        "text": entry_text,
+        "link": link,
+        "category": category
+    }
+    entries.insert(row, new_entry)
+    if write_entries(entries):
+        await update.message.reply_text(
+            f"✅ Inserted new entry at row {row+1}:\n\n"
+            f"Category: {category}\nText: {entry_text}\nLink: {link}"
+        )
+    else:
+        await update.message.reply_text("❌ Error: Failed to insert entry due to a write error.")
+
+@admin_only  # Remove this decorator if you want all users to use /s
+async def show_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the full details of a specific entry by index, with a delete button."""
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /s <entry_number>\nExample: /s 4")
+        return
+    idx = int(args[0]) - 1  # Convert to zero-based index
+    entries = read_entries()
+    if idx < 0 or idx >= len(entries):
+        await update.message.reply_text(f"Entry #{args[0]} does not exist. There are {len(entries)} entries.")
+        return
+    entry = entries[idx]
+    msg = (
+        f"<b>Entry #{idx+1}</b>\n"
+        f"<b>Category:</b> {entry.get('category', 'General')}\n"
+        f"<b>Text:</b>\n<blockquote>{entry['text']}</blockquote>\n"
+        f"<b>Link:</b> <a href='{entry['link']}'>{entry['link']}</a>"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ Delete", callback_data=f"sdelete:{idx}")]
+    ])
+    await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
+
+@admin_only  # Only allow admins to delete
+async def handle_single_entry_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the delete button for a specific entry shown via /s."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    data = query.data
+    idx = int(data.split(":", 1)[1])
+    entries = read_entries()
+    if idx < 0 or idx >= len(entries):
+        await query.answer("Entry does not exist.", show_alert=True)
+        return
+    entry = entries[idx]
+    # Delete the entry
+    if delete_entry(idx):
+        await query.edit_message_text(
+            f"✅ Entry #{idx+1} deleted successfully.\n\n"
+            f"Category: {entry.get('category', 'General')}\n"
+            f"Text: {entry['text'][:60]}{'...' if len(entry['text']) > 60 else ''}"
+        )
+    else:
+        await query.answer("Failed to delete entry.", show_alert=True)
 
 def clean_telegram_html(text: str) -> str:
     """
@@ -800,10 +543,206 @@ def schedule_daily_csv_backup(bot_token: str, file_path: str, channel_id: int):
     scheduler.start()
     logger.info("Scheduled daily CSV backup to logs channel.")
 
-# Search functionality is now handled by storage.search_entries using SQLite FTS5
+def get_categories() -> List[str]:
+    """Get the list of categories."""
+    try:
+        with open(CATEGORIES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("categories", [])
+    except Exception as e:
+        logger.error(f"Error reading categories: {str(e)}")
+        return ["General"]
+        
+def add_category(category: str) -> bool:
+    """Add a new category."""
+    if not category:
+        return False
+        
+    categories = get_categories()
+    if category in categories:
+        return True
+        
+    categories.append(category)
+    try:
+        with open(CATEGORIES_FILE, "w", encoding="utf-8") as f:
+            json.dump({"categories": categories}, f)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing categories: {str(e)}")
+        return False
+
+def read_entries(category: Optional[str] = None) -> List[Dict[str, str]]:
+    """Read entries from the CSV file with optional filtering by category only."""
+    entries = []
+    try:
+        with open(ENTRIES_FILE, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Fill in missing fields
+                if "category" not in row:
+                    row["category"] = "General"
+                # Remove group_id if present from previous versions
+                row.pop("group_id", None)
+                if category is not None and row["category"] != category:
+                    continue
+                entries.append(row)
+    except Exception as e:
+        logger.error(f"Error reading entries: {str(e)}")
+    return entries
+
+def write_entries(entries: List[Dict[str, str]]) -> bool:
+    """Write entries to the CSV file (category only, no group_id)."""
+    try:
+        with open(ENTRIES_FILE, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+            writer.writeheader()
+            writer.writerows(entries)
+        return True
+    except Exception as e:
+        logger.error(f"Error writing entries: {str(e)}")
+        return False
+
+def add_entry(text: str, link: str, category: str = "General") -> bool:
+    """Add a new entry (no group-specific logic)."""
+    entries = read_entries()
+    for entry in entries:
+        if entry["text"] == text and entry["link"] == link:
+            return False
+    add_category(category)
+    new_entry = {
+        "text": text,
+        "link": link,
+        "category": category
+    }
+    entries.append(new_entry)
+    return write_entries(entries)
+
+def delete_entry(index: int) -> bool:
+    """Delete an entry from the CSV file."""
+    entries = read_entries()
+    if 0 <= index < len(entries):
+        entries.pop(index)
+        return write_entries(entries)
+    return False
+
+def clear_all_entries(category: Optional[str] = None) -> int:
+    """Clear all entries, optionally filtered by category only."""
+    all_entries = read_entries()
+    if category is None:
+        count = len(all_entries)
+        return count if write_entries([]) else 0
+    entries_to_keep = []
+    count = 0
+    for entry in all_entries:
+        if entry["category"] != category:
+            entries_to_keep.append(entry)
+        else:
+            count += 1
+    if count > 0:
+        success = write_entries(entries_to_keep)
+        return count if success else 0
+    return 0
+
+# --------- ADVANCED SEARCH-THEN-SUMMARIZE PATCH ---------
+# --- PATCH: SEMANTIC EMBEDDINGS CACHE ---
+_semantic_model = None
+_entry_embeddings = None
+_EMBEDDINGS_LAST_N = 400  # Only cache last N for memory, tweak if needed
+
+def get_semantic_model():
+    global _semantic_model
+    if not SEMANTIC_MODEL_AVAILABLE:
+        return None
+    if _semantic_model is None:
+        _semantic_model = SentenceTransformer("all-MiniLM-L6-v2")  # Fast, accurate, 80MB RAM
+    return _semantic_model
+
+def compute_entry_embeddings(entries):
+    """
+    Compute or retrieve entry embeddings for semantic search. Returns list of tuples:
+    (entry, embedding)
+    """
+    global _entry_embeddings
+    model = get_semantic_model()
+    if model is None:
+        return []
+    # Only recompute if cache invalid or changed
+    if _entry_embeddings is not None and len(_entry_embeddings) == len(entries):
+        return _entry_embeddings
+    texts = [f"{entry['text']} [cat:{entry['category']}]" for entry in entries]
+    embeddings = model.encode(texts, convert_to_tensor=True, show_progress_bar=False)
+    _entry_embeddings = list(zip(entries, embeddings))
+    return _entry_embeddings
+
+def semantic_similarity_search(query, entries, top_n=8):
+    """
+    Returns top_n entries most semantically similar to query.
+    """
+    if not SEMANTIC_MODEL_AVAILABLE:
+        return []
+    model = get_semantic_model()
+    if model is None or not entries:
+        return []
+    entry_embeds = compute_entry_embeddings(entries)
+    query_emb = model.encode(query, convert_to_tensor=True)
+    scores = util.pytorch_cos_sim(query_emb, [emb for _, emb in entry_embeds])[0]
+    top_idxs = scores.topk(top_n).indices.tolist()
+    return [entry_embeds[i][0] for i in top_idxs]
+
+def search_entries_advanced(
+    query: str,
+    category: Optional[str] = None,
+    top_n: int = 8,
+    min_results: int = 2,
+    score_threshold: int = 50
+) -> List[Dict[str, str]]:
+    """
+    Advanced fuzzy search with fallback to semantic similarity.
+    """
+    entries = read_entries(category=category)
+    if not query:
+        return entries[:top_n]
+
+    query = query.strip().lower()
+    keywords = [word for word in re.findall(r'\w+', query) if len(word) > 1]
+    keyword_set = set(keywords)
+
+    scored = []
+    for entry in entries:
+        text = entry["text"].lower()
+        cat = entry.get("category", "").lower()
+        score_text = fuzz.token_sort_ratio(query, text)
+        score_cat = fuzz.token_sort_ratio(query, cat)
+        score_partial_text = fuzz.partial_ratio(query, text)
+        score_partial_cat = fuzz.partial_ratio(query, cat)
+        entry_words = set(re.findall(r'\w+', text + " " + cat))
+        keyword_matches = keyword_set & entry_words
+        keyword_match_count = len(keyword_matches)
+        all_keywords_in_entry = keyword_set.issubset(entry_words)
+        keyword_boost = 10 * keyword_match_count
+        if all_keywords_in_entry and keyword_set:
+            keyword_boost += 20
+        composite_score = (
+            0.4 * score_text +
+            0.2 * score_cat +
+            0.2 * score_partial_text +
+            0.1 * score_partial_cat +
+            keyword_boost
+        )
+        scored.append((composite_score, entry))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+    filtered = [e for score, e in scored if score >= score_threshold]
+    if len(filtered) < min_results:
+        filtered = [e for _, e in scored[:max(top_n, min_results)]]
+
+    # --- PATCH: SEMANTIC FALLBACK ---
+    if (not filtered or all(fuzz.token_sort_ratio(query, e["text"].lower()) < 30 for e in filtered)) and SEMANTIC_MODEL_AVAILABLE:
+        logger.info("No good fuzzy match, using semantic similarity fallback.")
+        filtered = semantic_similarity_search(query, entries, top_n)
+    return filtered[:top_n]
 
 def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str, str]]:
-    """Search for entries matching the query, with optional category filtering (no group)."""
     entries = read_entries(category=category)
     if not query:
         return entries
@@ -828,14 +767,13 @@ def get_context_for_question(question: str, category: Optional[str] = None, top_
     """
     Build context string from most relevant entries for a question.
     """
-    relevant_entries = storage.search_entries(question, category, top_n)
+    relevant_entries = search_entries_advanced(question, category, top_n)
     return "\n\n".join(
         f"Category: {entry.get('category', 'General')}\nEntry: {entry['text']}\nSource: {entry['link']}"
         for entry in relevant_entries
     )
 
 # Command Handlers
-@log_command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
@@ -863,7 +801,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_html(help_text)
 
 @rate_limit()
-@log_command
 async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Answer a question using the LLM but reply to the person being replied to and delete the command."""
     # Check if this message is a reply
@@ -906,7 +843,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         prompt = build_prompt(question, context_text)
 
         # Build keywords from relevant entries for hyperlinks
-        relevant_entries = storage.search_entries(question, top_n=8)
+        relevant_entries = search_entries_advanced(question, top_n=8)
         keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
         final_answer = add_hyperlinks(answer, keywords)
@@ -945,7 +882,6 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 # Add the logs command handler
 @admin_only
-@log_command
 async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send the last 10 log entries to the chat."""
     if not last_logs:
@@ -994,7 +930,7 @@ async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     entry_text = match_groups[0]
     link = match_groups[1]
     category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
-    if storage.add_entry(entry_text, link, category):
+    if add_entry(entry_text, link, category):
         await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
     else:
         await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
@@ -1010,7 +946,7 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             query = arg
     page = int(context.user_data.get('page', 0))
-    entries = storage.get_entries(category)
+    entries = search_entries(query, category) if query else read_entries(category)
     total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
     start_idx = page * ENTRIES_PER_PAGE
     end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
@@ -1036,7 +972,7 @@ async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     keyboard = []
     
     # Add category filter buttons
-    categories = storage.get_categories()
+    categories = get_categories()
     category_buttons = []
     for cat in categories[:3]:  # Limit to 3 buttons per row
         category_buttons.append(InlineKeyboardButton(
@@ -1175,7 +1111,7 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard = []
         
         # Add category filter buttons (only for admins)
-        categories = storage.get_categories()
+        categories = get_categories()
         category_buttons = []
         for cat in categories[:3]:  # Limit to 3 buttons per row
             category_buttons.append(InlineKeyboardButton(
@@ -1327,7 +1263,6 @@ async def generate_response(prompt: str, _, __=None) -> str:
         raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 @rate_limit()
-@log_command
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
     if not question:
@@ -1346,7 +1281,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         await load_llm()
         prompt = build_prompt(question, context_text)
-        relevant_entries = storage.search_entries(question, top_n=8)
+        relevant_entries = search_entries_advanced(question, top_n=8)
         keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
         final_answer = add_hyperlinks(answer, keywords)
@@ -1389,79 +1324,29 @@ async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAUL
 
 @admin_only
 async def download_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Export the database to CSV
-    entries = storage.get_entries()
-    if not entries:
-        await update.message.reply_text("No entries found in the database.")
+    if not os.path.exists(ENTRIES_FILE):
+        await update.message.reply_text("No entries file exists yet.")
         return
-    
-    with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".csv", encoding="utf-8") as tmp_file:
-        fieldnames = ["text", "link", "category"]
-        writer = csv.DictWriter(tmp_file, fieldnames=fieldnames)
-        writer.writeheader()
-        for entry in entries:
-            writer.writerow({
-                "text": entry["text"],
-                "link": entry["link"],
-                "category": entry["category"]
-            })
-        tmp_path = tmp_file.name
-    
-    try:
-        await update.message.reply_document(
-            document=open(tmp_path, "rb"),
-            filename="entries.csv",
-            caption="Here's your complete knowledge base as a CSV file."
-        )
-    finally:
-        # Clean up the temporary file
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+    await update.message.reply_document(
+        document=open(ENTRIES_FILE, "rb"),
+        filename="entries.csv",
+        caption="Here's your complete knowledge base CSV file."
+    )
 
 @admin_only
-async def request_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Request the user to upload a file (CSV or SQLite DB)."""
-    categories = storage.get_categories()
+async def request_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Request the user to upload a CSV file."""
+    categories = get_categories()
     category_list = ", ".join(categories)
     
-    keyboard = [
-        [InlineKeyboardButton("CSV File", callback_data="upload:csv"),
-         InlineKeyboardButton("SQLite DB", callback_data="upload:db")]
-    ]
-    
     await update.message.reply_text(
-        "Please choose the type of file you want to upload:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "Please upload your CSV file as a reply to this message.\n\n"
+        f"The file should have these columns: 'text', 'link', 'category', 'group_id'\n\n"
+        f"Available categories: {category_list}\n\n"
+        "If you're adding entries for this group, leave group_id empty."
     )
-    
-async def handle_upload_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle selection of upload file type."""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data.split(":")[1]
-    
-    if data == "csv":
-        categories = storage.get_categories()
-        category_list = ", ".join(categories)
-        
-        await query.edit_message_text(
-            "Please upload your CSV file as a reply to this message.\n\n"
-            f"The file should have these columns: 'text', 'link', 'category'\n\n"
-            f"Available categories: {category_list}\n"
-        )
-        context.user_data["awaiting_csv"] = True
-        
-    elif data == "db":
-        await query.edit_message_text(
-            "Please upload your SQLite database file (.db) as a reply to this message.\n\n"
-            "This will replace the current database. All entries will be updated "
-            "based on the uploaded file.\n\n"
-            "⚠️ WARNING: This operation cannot be undone. Make sure to download a backup first."
-        )
-        context.user_data["awaiting_db"] = True
+    # Set the expected state
+    context.user_data["awaiting_csv"] = True
 
 @admin_only
 async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1475,10 +1360,6 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     document = update.message.document
     file_name = document.file_name.lower() if document.file_name else "unnamed.file"
-    if not file_name.endswith(".csv"):
-        await update.message.reply_text("Please upload a file with .csv extension.")
-        return
-    
     uploaded_entries = []
     processing_status = await update.message.reply_text("⏳ Processing your uploaded file...")
     try:
@@ -1486,9 +1367,9 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
             await file.download_to_drive(temp_file.name)
             file_path = temp_file.name
+        file_content = ""
+        rows_parsed = []
         try:
-            rows_parsed = []
-            file_content = ""
             with open(file_path, "r", encoding="utf-8") as f:
                 file_content = f.read()
         except UnicodeDecodeError:
@@ -1497,15 +1378,11 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     file_content = f.read()
             except Exception as e:
                 await processing_status.edit_text(f"Error reading file: {str(e)}")
-                if os.path.exists(file_path):
-                    os.unlink(file_path)
                 return
         if not any(separator in file_content for separator in [",", "\t", ";"]):
             await processing_status.edit_text(
                 "The uploaded file doesn't appear to be in CSV format. Expected comma, tab, or semicolon delimiters."
             )
-            if os.path.exists(file_path):
-                os.unlink(file_path)
             return
         for delimiter in [",", "\t", ";"]:
             try:
@@ -1526,8 +1403,6 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 "Could not find required 'text' and 'link' columns in the CSV. "
                 "Please check the file format and try again."
             )
-            if os.path.exists(file_path):
-                os.unlink(file_path)
             return
         # Process the successfully parsed rows
         for i, row in enumerate(rows_parsed, 1):
@@ -1545,12 +1420,10 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 uploaded_entries.append(new_entry)
             except Exception as row_error:
                 logger.error(f"Error processing row {i}: {str(row_error)}")
-        if os.path.exists(file_path):
-            try:
-                os.unlink(file_path)
-            except Exception as e:
-                logger.error(f"Error cleaning up temp file: {str(e)}")
-                
+        try:
+            os.unlink(file_path)
+        except Exception as e:
+            logger.error(f"Error cleaning up temp file: {str(e)}")
         if not uploaded_entries:
             await processing_status.edit_text("No valid entries found in the CSV file.")
             return
@@ -1559,8 +1432,7 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         keyboard = [
             [
                 InlineKeyboardButton("Replace All", callback_data="csv:replace"),
-                InlineKeyboardButton("Append Entries", callback_data="csv:append"),
-                InlineKeyboardButton("Merge and Deduplicate", callback_data="csv:merge"),
+                InlineKeyboardButton("Append", callback_data="csv:append"),
             ],
             [InlineKeyboardButton("Cancel", callback_data="csv:cancel")]
         ]
@@ -1573,11 +1445,6 @@ async def handle_csv_upload(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except:
             pass
         await update.message.reply_text(f"Error processing the uploaded file: {str(e)}")
-        if os.path.exists(file_path):
-            try:
-                os.unlink(file_path)
-            except:
-                pass
 
 async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1592,33 +1459,25 @@ async def handle_csv_action(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     try:
         if action == "replace":
-            # Clear all existing entries before adding new ones
-            storage.clear_entries()
-            success = True
-            added_count = 0
-            for entry in uploaded_entries:
-                if storage.add_entry(entry["text"], entry["link"], entry["category"]):
-                    added_count += 1
-            message = f"✅ Successfully replaced all entries with {added_count} new entries."
+            success = write_entries(uploaded_entries)
+            message = f"✅ Successfully replaced all entries with {len(uploaded_entries)} new entries." if success else "❌ Failed to update entries."
         elif action == "append":
-            # Add entries one by one
-            added_count = 0
-            skipped_count = 0
-        elif action == "merge":
-            # Merge uploaded entries with existing entries, ensuring no duplicates
-            current_entries = storage.get_entries()
-            merged_entries = storage.merge_entries(current_entries, uploaded_entries)
-            added_count = len(merged_entries) - len(current_entries)
-            skipped_count = len(uploaded_entries) - added_count
-            storage.write_entries(merged_entries)
-            message = f"✅ Merged {added_count} new entries (skipped {skipped_count} duplicates)."
-        await query.edit_message_text(message)
-        for entry in uploaded_entries:
-            if storage.add_entry(entry["text"], entry["link"], entry["category"]):
-                added_count += 1
-            else:
-                skipped_count += 1
-        message = f"✅ Added {added_count} new entries (skipped {skipped_count} duplicates)."
+            current_entries = read_entries()
+            new_entries = []
+            existing_count = 0
+            for entry in uploaded_entries:
+                is_duplicate = False
+                for existing in current_entries:
+                    if (existing["text"] == entry["text"] and 
+                        existing["link"] == entry["link"]):
+                        is_duplicate = True
+                        existing_count += 1
+                        break
+                if not is_duplicate:
+                    new_entries.append(entry)
+            combined_entries = current_entries + new_entries
+            success = write_entries(combined_entries)
+            message = f"✅ Added {len(new_entries)} new entries (skipped {existing_count} duplicates)." if success else "❌ Failed to update entries."
         await query.edit_message_text(message)
     except Exception as e:
         logger.error(f"Error handling CSV action: {str(e)}")
@@ -1630,42 +1489,16 @@ async def main():
     # Load environment variables
     load_dotenv()
     
-    # Enhanced logging at startup
-    logger.info("================ BOT STARTUP =================")
-    logger.info(f"Starting bot at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    
     # Initialize bot token and admin IDs
     bot_token = BOT_TOKEN
-    logger.info(f"Bot token length: {len(bot_token) if bot_token else 'Token not found'}")
-    
-    # Validate bot token format
-    if not bot_token or ":" not in bot_token:
-        logger.error(f"Invalid bot token format. Token should contain ':' character. Please check your BOT_TOKEN.")
-        raise ValueError("Invalid bot token format")
-        
-    # Test bot token with a simple getMe API call
-    try:
-        logger.info("Testing bot token with getMe API call...")
-        response = requests.get(f"https://api.telegram.org/bot{bot_token}/getMe")
-        if response.status_code != 200:
-            error_data = response.json()
-            logger.error(f"Bot token validation failed: {error_data}")
-            raise ValueError(f"Invalid bot token: {error_data.get('description', 'Unknown error')}")
-        bot_info = response.json().get('result', {})
-        logger.info(f"Bot token validated successfully! Connected as @{bot_info.get('username')}")
-    except Exception as e:
-        logger.error(f"Error validating bot token: {str(e)}")
-        raise ValueError(f"Failed to validate bot token: {str(e)}")
-        
     admin_ids = [int(id.strip()) for id in os.getenv("ADMIN_USER_IDS", "").split(",") if id.strip()]
-    logger.info(f"Admin IDs configured: {admin_ids}")
     
     # Initialize status monitor
     status_monitor = BotStatusMonitor(bot_token, admin_ids)
     # Schedule the daily backup of the entries CSV to the logs channel
-    schedule_daily_db_backup(
+    schedule_daily_csv_backup(
         bot_token=bot_token,
-        file_path="entries.db",
+        file_path=ENTRIES_FILE,
         channel_id=-1001925908750
     )
     
@@ -1674,14 +1507,7 @@ async def main():
     
     try:
         # Initialize your application
-        # Create application with detailed logging
-        logger.info("Creating Application instance with the provided token...")
-        try:
-            application = Application.builder().token(bot_token).build()
-            logger.info("Application instance created successfully")
-        except Exception as e:
-            logger.critical(f"Failed to create Application instance: {e}", exc_info=True)
-            raise ValueError(f"Invalid bot configuration: {str(e)}")
+        application = Application.builder().token(bot_token).build()
         
         # Add handlers
         application.add_handler(CommandHandler("start", start))
@@ -1694,36 +1520,34 @@ async def main():
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
-        application.add_handler(CommandHandler("download", download_db))  # Admin-only db download
-        application.add_handler(CommandHandler("download_csv", download_csv))  # Admin-only CSV export
-        application.add_handler(CommandHandler("upload", request_upload))  # Admin-only upload selection
+        application.add_handler(CommandHandler("rub", ask_question))  # Available to all users
+        application.add_handler(CommandHandler("download", download_csv))  # Admin-only
+        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
         application.add_handler(CommandHandler("here", here_command))  # Available to all users
         application.add_handler(CommandHandler("logs", show_logs))  # New logs command
         application.add_handler(CommandHandler("s", show_entry_command))
         application.add_handler(CommandHandler("i", insert_entry_command))
         application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
-        
-        # File upload handlers
-        application.add_handler(MessageHandler(
-            filters.Document.FileExtension(".db") & filters.REPLY,
-            handle_db_upload
-        ))
-        application.add_handler(MessageHandler(
-            filters.Document.FileExtension(".csv") & filters.REPLY,
-            handle_csv_upload
-        ))
-        
         # Enhanced callback query handlers
-        application.add_handler(CallbackQueryHandler(handle_upload_selection, pattern=r"^upload:"))
-        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cat:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
+        application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
+    
+        # Document handler for CSV upload - more permissive to handle different formats
+        application.add_handler(
+            MessageHandler(
+                (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
+                filters.REPLY, 
+                handle_csv_upload
+            )
+        )
+    
         # Start health check server (if needed)
         # Note: We comment this out because the run_health_server function might not exist
         # health_thread = threading.Thread(target=run_health_server, daemon=True)
@@ -1739,27 +1563,7 @@ async def main():
         health_check_task = asyncio.create_task(periodic_health_check())
         
         # Run the bot (only run once)
-        logger.info("Starting bot polling...")
-        try:
-            # Configure telegram bot with more detailed logging
-            # Set logging level for the application
-            logging.getLogger('httpx').setLevel(logging.INFO)
-            # Enable debug mode in telegram bot api
-            application.bot._log = True
-            # Detailed logging of telegram updates
-            logger.info(f"Bot will listen for the following update types: {Update.ALL_TYPES}")
-#            logger.info(f"Bot username: {application.bot.username}, Bot ID: {application.bot.id}")
-            
-            # Start polling with aggressive settings to ensure we get updates
-            await application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                poll_interval=1.0,
-                timeout=30
-            )
-        except Exception as e:
-            logger.critical(f"Error in run_polling: {e}", exc_info=True)
-            raise
+        await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         # Send shutdown notification with error
         await status_monitor.send_shutdown_notification(f"Error: {str(e)}")
@@ -1797,12 +1601,6 @@ if __name__ == "__main__":
     logger.info("Starting Summarizer2 Telegram Bot")
     try:
         # With nest_asyncio.apply() already called, we can use asyncio.run safely
-        logger.info("Initializing main event loop")
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by keyboard interrupt (Ctrl+C)")
     except Exception as e:
-        logger.critical(f"Critical error in main process: {e}", exc_info=True)
-        # Print stacktrace for easier debugging
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error in main process: {e}")
