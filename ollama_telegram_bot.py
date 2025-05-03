@@ -1520,6 +1520,7 @@ async def main():
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
+        application.add_handler(CommandHandler("rub", ask_question))  # Available to all users
         application.add_handler(CommandHandler("download", download_csv))  # Admin-only
         application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
