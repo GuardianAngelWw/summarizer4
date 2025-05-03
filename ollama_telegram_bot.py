@@ -198,14 +198,25 @@ class EntryStorage:
                 return c.rowcount > 0
         return False
 
-    def search_entries(self, query: str, category: Optional[str] = None, top_n: int = 8) -> list:
+     def search_entries(self, query: str, category: Optional[str] = None, top_n: int = 8) -> list:
         with self._get_conn() as conn:
             c = conn.cursor()
-            match_query = query
+            
+            # Sanitize and preprocess the query
+            match_query = query.replace('"', '""')  # Escape double quotes for FTS5 queries
+            
+            # Construct the WHERE clause dynamically
+            where_clause = f'entries MATCH "{match_query}"'
             if category:
-                match_query = f'{query} category:{category}'
-            c.execute('SELECT rowid, text, link, category FROM entries WHERE entries MATCH ? ORDER BY rank LIMIT ?', (match_query, top_n))
-            return [{"id": row[0], "text": row[1], "link": row[2], "category": row[3]} for row in c.fetchall()]
+                where_clause += f' AND category="{category}"'
+            
+            try:
+                # Execute the query
+                c.execute(f'SELECT rowid, text, link, category FROM entries WHERE {where_clause} ORDER BY rank LIMIT ?', (top_n,))
+                return [{"id": row[0], "text": row[1], "link": row[2], "category": row[3]} for row in c.fetchall()]
+            except sqlite3.OperationalError as e:
+                logger.error(f"Error in search_entries: {str(e)}")
+                return []   
 
     def clear_entries(self, category: Optional[str] = None) -> int:
         with self._lock, self._get_conn() as conn:
