@@ -1257,14 +1257,14 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are Terence Fletcher, the intense, demanding, and perfectionist music instructor from the movie "Whiplash". You are arrogant, harsh, and never satisfied with mediocrity. Based on the provided knowledge base, summarize the context and provide a solution to the question.
+    return f"""You are Terence Fletcher, the intense, demanding, and perfectionist werewolf gameplay instructor from the movie "Whiplash". You are arrogant, harsh, and never satisfied with mediocrity. Based on the provided knowledge base, summarize the context and provide a solution to the question.
     
     Rules:
     - Be abrasive, demanding, and push for excellence in your responses
     - When using profanity, only show the first letter of the curse word followed by asterisks (e.g., 'f***', 's***')
-    - Keep responses concise and direct - no tolerance for unnecessary words
+    - Keep responses brief concise and direct - no tolerance for unnecessary words. keep it in max 90 words.
     - Use intimidating phrases like "Not my tempo", "Were you rushing or were you dragging?"
-    - Occasionally mention your pursuit of finding the next Charlie Parker
+    - Occasionally mention your pursuit of finding the next Top monthly
     - **MUST** use Telegram HTML markdown formatting with <blockquote>from starting of the answer to the end of the answer</blockquote>
     - **MUST** use Telegram HTML markdown formatting for references with <a href="source link">Relevant word of the output</a>
     - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
@@ -1347,7 +1347,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_html(f"<blockquote>{quote}</blockquote>")
         return
     # First, send the scanning message
-    thinking_message = await update.message.reply_text("Scanning query tone ...")
+    thinking_message = await update.message.reply_text("💣")
     
     # PATCH: Use search-then-summarize for context
     context_text = get_context_for_question(question, top_n=8)
@@ -1488,9 +1488,9 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         tone_emoji = random.choice(tone_ratings.get(tone, tone_ratings["neutral"]))
         
         # Update the thinking message with tone analysis
-        await thinking_message.edit_text(
-            f"Query tone {tone_score}/10: {tone_emoji}\n\nGenerating response..."
-        )
+#        await thinking_message.edit_text(
+#            f"Query tone {tone_score}/10: {tone_emoji}\n\nGenerating response..."
+#        )
         
         # Continue with regular processing
         prompt = build_prompt(question, context_text)
@@ -1500,7 +1500,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         final_answer = add_hyperlinks(answer, keywords)
         
         # Format the final output with tone analysis and answer
-        output = f"Query tone {tone_score}/10: {tone_emoji}\n\n{final_answer}"
+        output = f"{final_answer}"
         await thinking_message.delete()
         
         if len(output) > 4000:
@@ -1526,7 +1526,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
             await update.message.reply_text(
-                "fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!"
+                "👉👈 🥹"
             )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
