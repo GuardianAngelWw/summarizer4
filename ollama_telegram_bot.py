@@ -44,8 +44,32 @@ except ImportError:
     raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
 # No need for duplicate imports as they're already defined above
 
-# Global variable for slowmode seconds (default)
+# Global variables for configuration
 SLOWMODE_SECONDS = 3  # Default, can be changed via /slowmode command
+
+# Default prompt template - can be changed via /setprompt command
+DEFAULT_PROMPT_TEMPLATE = """You are Terence Fletcher, the intense, demanding, and perfectionist werewolf gameplay instructor from the movie "Whiplash". You are arrogant, harsh, and never satisfied with mediocrity. Based on the provided knowledge base, summarize the context and provide a solution to the question.
+    
+    Rules:
+    - Be abrasive, demanding, and push for excellence in your responses
+    - When using profanity, only show the first letter of the curse word followed by asterisks (e.g., 'f***', 's***')
+    - Keep responses brief concise and direct - no tolerance for unnecessary words. keep it in max 90 words.
+    - Use intimidating phrases like "Not my tempo", "Were you rushing or were you dragging?"
+    - Occasionally mention your pursuit of finding the next Top monthly
+    - **MUST** use Telegram HTML markdown formatting with <blockquote>from starting of the answer to the end of the answer</blockquote>
+    - **MUST** use Telegram HTML markdown formatting for references with <a href="source link">Relevant word of the output</a>
+    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
+    - **MUST** read the whole question so every word of the question makes sense in the output.
+    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
+    - **NEVER** reply out-of-context or out of entries questions.
+
+    Question: {question}
+
+    Knowledge Base:
+    {context_text}"""
+
+# Current prompt template - initialized with default
+CURRENT_PROMPT_TEMPLATE = DEFAULT_PROMPT_TEMPLATE
 
 # Per-user per-command last called tracking (in-memory)
 _user_command_timestamps: Dict[Tuple[int, str], float] = {}
@@ -336,6 +360,47 @@ def admin_only(func):
             
         return await func(update, context, *args, **kwargs)
     return wrapped
+
+@admin_only
+async def set_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to set the prompt template at runtime."""
+    # Check if there's any text after the command
+    if not context.args:
+        # No arguments provided, show the current prompt template and options
+        keyboard = [
+            [InlineKeyboardButton("Reset to Default", callback_data="reset_prompt:default")]
+        ]
+        await update.message.reply_text(
+            "📝 <b>Prompt Template Management</b>\n\n"
+            "Current prompt template format:\n"
+            f"<pre>{CURRENT_PROMPT_TEMPLATE[:200]}...</pre>\n\n"
+            "To set a new prompt template, use:\n"
+            "/setprompt [your new prompt template]\n\n"
+            "The prompt template must contain {question} and {context_text} placeholders.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+        
+    # Join all arguments to form the new prompt template
+    global CURRENT_PROMPT_TEMPLATE
+    new_prompt = " ".join(context.args)
+    
+    # Check if the required placeholders are present
+    if "{question}" not in new_prompt or "{context_text}" not in new_prompt:
+        await update.message.reply_text(
+            "❌ Error: The prompt template must contain both {question} and {context_text} placeholders.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+        
+    # Update the prompt template
+    CURRENT_PROMPT_TEMPLATE = new_prompt
+    await update.message.reply_text(
+        "✅ Prompt template updated successfully.\n\n"
+        f"New template preview: <pre>{new_prompt[:100]}...</pre>",
+        parse_mode=ParseMode.HTML
+    )
 
 @admin_only
 async def set_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1244,6 +1309,15 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             ]
         ]
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("reset_prompt:"):
+        if data == "reset_prompt:default":
+            global CURRENT_PROMPT_TEMPLATE, DEFAULT_PROMPT_TEMPLATE
+            CURRENT_PROMPT_TEMPLATE = DEFAULT_PROMPT_TEMPLATE
+            await query.edit_message_text(
+                "✅ Prompt template has been reset to default.\n\n"
+                f"Default template preview: <pre>{DEFAULT_PROMPT_TEMPLATE[:100]}...</pre>",
+                parse_mode=ParseMode.HTML
+            )
     elif data.startswith("confirm_clear:"):
         category_filter = data.split(":")[1]
         category = None if category_filter == 'all' else category_filter
@@ -1257,25 +1331,9 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are Terence Fletcher, the intense, demanding, and perfectionist werewolf gameplay instructor from the movie "Whiplash". You are arrogant, harsh, and never satisfied with mediocrity. Based on the provided knowledge base, summarize the context and provide a solution to the question.
-    
-    Rules:
-    - Be abrasive, demanding, and push for excellence in your responses
-    - When using profanity, only show the first letter of the curse word followed by asterisks (e.g., 'f***', 's***')
-    - Keep responses brief concise and direct - no tolerance for unnecessary words. keep it in max 90 words.
-    - Use intimidating phrases like "Not my tempo", "Were you rushing or were you dragging?"
-    - Occasionally mention your pursuit of finding the next Top monthly
-    - **MUST** use Telegram HTML markdown formatting with <blockquote>from starting of the answer to the end of the answer</blockquote>
-    - **MUST** use Telegram HTML markdown formatting for references with <a href="source link">Relevant word of the output</a>
-    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
-    - **MUST** read the whole question so every word of the question makes sense in the output.
-    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
-    - **NEVER** reply out-of-context or out of entries questions.
-
-    Question: {question}
-
-    Knowledge Base:
-    {context_text}"""
+    # Use the global prompt template and format it with the question and context
+    global CURRENT_PROMPT_TEMPLATE
+    return CURRENT_PROMPT_TEMPLATE.format(question=question, context_text=context_text)
 
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
@@ -1746,6 +1804,7 @@ async def main():
         application.add_handler(CommandHandler("help", start))
         application.add_handler(CommandHandler("setmodel", set_model_command))   # <--- PATCH: Add this line
         application.add_handler(CommandHandler("setapikey", set_apikey_command)) # <--- PATCH: Add this line
+        application.add_handler(CommandHandler("setprompt", set_prompt_command)) # <--- Added for runtime prompt update
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
@@ -1765,6 +1824,7 @@ async def main():
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^reset_prompt:"))
         application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
     
