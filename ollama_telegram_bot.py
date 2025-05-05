@@ -18,7 +18,6 @@ import asyncio
 import time
 from typing import Callable, Optional, Dict, Tuple
 from apscheduler.schedulers.background import BackgroundScheduler
-import random
 # Apply nest_asyncio to patch the event loop
 nest_asyncio.apply()
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatMember, Chat
@@ -212,7 +211,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6642970632:AAFWulXiPBa0dQQwdrq0He3kOojcDxaAWP0"
+BOT_TOKEN = "6642970632:AAFpcGPXk5bMHvmgVQopBfcSVQa61YCC6j4"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -777,10 +776,37 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     question = command_text[5:].strip()  # Remove "/here "
     
     if not question:
-        await update.message.reply_text(
-            "Please provide a question after the /here command. For example:\n"
-            "/here What are some betrayal cases in wolfblood?"
+        # Use random Baymax quotes when replying without a question
+        baymax_quotes = [
+            "Hello. I am Baymax, your personal healthcare companion.",
+            "Are you satisfied with your care?",
+            "On a scale of 1 to 10, how would you rate your pain?",
+            "I am not fast.",
+            "Hairy baby! Hairy baby!",
+            "Flying makes me a better healthcare companion.",
+            "Tadashi is here.",
+            "I cannot be deactivated until you say you are satisfied with your care.",
+            "My programming prevents me from injuring a human being.",
+            "Your neurotransmitter levels are elevated. This indicates you are happy."
+        ]
+        import random
+        quote = random.choice(baymax_quotes)
+        
+        # Get the replied user and send them the Baymax quote
+        replied_msg = update.message.reply_to_message
+        replied_user = replied_msg.from_user
+        
+        await replied_msg.reply_html(
+            f"{replied_user.mention_html()} <blockquote>{quote}</blockquote>",
+            disable_web_page_preview=True
         )
+        
+        # Delete the command message
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {str(e)}")
+            
         return
     
     # Get the message this is replying to
@@ -788,7 +814,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     replied_user = replied_msg.from_user
     
     # Send initial thinking message
-    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
+    thinking_message = await update.message.reply_text("Scanning query tone ...")
     
     context_text = get_context_for_question(question, top_n=8)
     if not context_text.strip():
@@ -801,9 +827,77 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        await thinking_message.edit_text("🤔")
         await load_llm()
-        await thinking_message.edit_text("⚡")
+        
+        # Analyze query tone (simplified version)
+        import random
+        tone_ratings = {
+            "curious": ["🤔", "🧐", "❓"],
+            "urgent": ["⚠️", "⏰", "🔥"],
+            "happy": ["😊", "🙂", "😄"],
+            "confused": ["😕", "🤨", "🙃"],
+            "formal": ["🧑‍💼", "📝", "🔍"],
+            "technical": ["💻", "🔧", "⚙️"],
+            "anxious": ["😰", "😓", "😟"],
+            "appreciative": ["🙏", "👍", "💯"],
+            "neutral": ["📊", "🔄", "⚖️"],
+            "creative": ["🎨", "🌈", "✨"]
+        }
+        
+        # Determine tone based on question keywords (simplified approach)
+        question_lower = question.lower()
+        words = question_lower.split()
+        
+        # Very basic tone detection logic
+        tone = "neutral"
+        tone_score = 5  # Default neutral score
+        
+        # Simple keyword-based tone detection
+        urgent_words = ["urgent", "immediately", "asap", "emergency", "now", "quickly"]
+        happy_words = ["happy", "glad", "excited", "wonderful", "amazing"]
+        confused_words = ["confused", "don't understand", "unclear", "what does", "how come"]
+        technical_words = ["code", "technical", "function", "system", "algorithm", "data"]
+        anxious_words = ["worried", "concerned", "anxious", "nervous", "scared"]
+        appreciative_words = ["thanks", "thank", "grateful", "appreciate"]
+        creative_words = ["imagine", "create", "design", "creative", "art"]
+        
+        if any(word in question_lower for word in urgent_words):
+            tone = "urgent"
+            tone_score = 8
+        elif any(word in question_lower for word in anxious_words):
+            tone = "anxious"
+            tone_score = 7
+        elif any(word in question_lower for word in confused_words):
+            tone = "confused"
+            tone_score = 6
+        elif any(word in question_lower for word in technical_words):
+            tone = "technical"
+            tone_score = 5
+        elif any(word in question_lower for word in happy_words):
+            tone = "happy"
+            tone_score = 4
+        elif any(word in question_lower for word in appreciative_words):
+            tone = "appreciative"
+            tone_score = 3
+        elif any(word in question_lower for word in creative_words):
+            tone = "creative"
+            tone_score = 6
+        elif "?" in question:
+            tone = "curious"
+            tone_score = 5
+        elif len(words) > 15:
+            tone = "formal"
+            tone_score = 4
+            
+        # Get random emoji for the detected tone
+        tone_emoji = random.choice(tone_ratings.get(tone, tone_ratings["neutral"]))
+        
+        # Update the thinking message with tone analysis
+        await thinking_message.edit_text(
+            f"Query tone {tone_score}/10: {tone_emoji}\n\nGenerating response..."
+        )
+        
+        # Continue with regular processing
         prompt = build_prompt(question, context_text)
 
         # Build keywords from relevant entries for hyperlinks
@@ -1165,15 +1259,13 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 def build_prompt(question: str, context_text: str) -> str:
     return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
     - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
-    - you should not send what you're thinking just send the processed output mentioned as below.
-    - you should use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
-    - you should use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
-    - If the question contains any code in <CODE_BLOCK></CODE_BLOCK> tag, treat it as code and while answering, should use Telegram HTML code markdown format.
-    - you should read the whole question so every word of the question makes sense in the output.
-    - you should not use a sentence that contains the following: 'I am programmed to provide excellent care', 'I cannot deactivate until you say, 'I am satisfied with my care' or any sentence that contains Baymax dialogue or anything related to baymax.
-    - you should never refer the user as a fool, idiot or servant.
-    - you should not mention about the knowledge base in the output or anything if you can / can't find.
-    - you should not reply out-of-context or out of entries questions.
+    - **NEVER** send what you're **thinking** just send the processed output mentioned as below.
+    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
+    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
+    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
+    - **MUST** read the whole question so every word of the question makes sense in the output.
+    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
+    - **NEVER** reply out-of-context or out of entries questions.
 
     Question: {question}
 
@@ -1189,10 +1281,6 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
     :param keywords: A dictionary of keywords and their corresponding URLs.
     :return: Updated answer with hyperlinks.
     """
-    # If keywords are empty, return the answer as is
-    if not keywords:
-        return answer
-        
     def escape_html(text):
         return (
             text.replace("&", "&amp;")
@@ -1201,14 +1289,13 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
                 .replace('"', "&quot;")
         )
 
-    hyperlink_pattern = r'<a\s+href="[^"]+">[^<]+</a>'
     for word, url in keywords.items():
         # Escape HTML in the word and URL
         safe_word = escape_html(word)
         safe_url = escape_html(url)
-        # Only replace the full word with the hyperlink if it's not already part of a hyperlink
-        answer = re.sub(r'(?<!' + hyperlink_pattern + r')' +
-            rf"(?<!\w)({re.escape(word)})(?!\w)",  
+        # Replace only the full word with the hyperlink (HTML)
+        answer = re.sub(
+            rf"(?<!\w)({re.escape(word)})(?!\w)",
             f'<a href="{safe_url}">{safe_word}</a>',
             answer
         )
@@ -1232,70 +1319,138 @@ async def generate_response(prompt: str, _, __=None) -> str:
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
-                                        
-@rate_limit(key_func=lambda u, c: (u.effective_user.id, "responding_baymax_dialogues" if u.message.text.startswith("/rub") or u.message.text.startswith("/ask") else "default"))
-async def responding_baymax_dialogues(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+
+@rate_limit()
+async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
     if not question:
-        await update.message.reply_text(
-            "Please provide a question after the command. For example:\n"
-            "/rub Whose birthdays are in the month of April?\n"
-            "/ask What are some betrayal cases in wolfblood?"
-        )
+        # Random Baymax quotes from IMDB when no question is provided
+        baymax_quotes = [
+            "Hello. I am Baymax, your personal healthcare companion.",
+            "Are you satisfied with your care?",
+            "On a scale of 1 to 10, how would you rate your pain?",
+            "I am not fast.",
+            "Hairy baby! Hairy baby!",
+            "Flying makes me a better healthcare companion.",
+            "Tadashi is here.",
+            "I cannot be deactivated until you say you are satisfied with your care.",
+            "My programming prevents me from injuring a human being.",
+            "Your neurotransmitter levels are elevated. This indicates you are happy."
+        ]
+        import random
+        quote = random.choice(baymax_quotes)
+        await update.message.reply_html(f"<blockquote>{quote}</blockquote>")
         return
-    scan_message = await update.message.reply_text("Scanning query..")
-    thinking_message = await update.message.reply_text("🤔")
+    # First, send the scanning message
+    thinking_message = await update.message.reply_text("Scanning query tone ...")
+    
     # PATCH: Use search-then-summarize for context
     context_text = get_context_for_question(question, top_n=8)
     if not context_text.strip():
-        await scan_message.delete()
         await thinking_message.delete()
         await update.message.reply_text("No knowledge entries found to answer your question.")
         return
+    
     try:
         await load_llm()
-        await thinking_message.edit_text("⚡")
+        
+        # Analyze query tone (simplified version)
+        import random
+        tone_ratings = {
+            "curious": ["🤔", "🧐", "❓"],
+            "urgent": ["⚠️", "⏰", "🔥"],
+            "happy": ["😊", "🙂", "😄"],
+            "confused": ["😕", "🤨", "🙃"],
+            "formal": ["🧑‍💼", "📝", "🔍"],
+            "technical": ["💻", "🔧", "⚙️"],
+            "anxious": ["😰", "😓", "😟"],
+            "appreciative": ["🙏", "👍", "💯"],
+            "neutral": ["📊", "🔄", "⚖️"],
+            "creative": ["🎨", "🌈", "✨"]
+        }
+        
+        # Determine tone based on question keywords (simplified approach)
+        question_lower = question.lower()
+        words = question_lower.split()
+        
+        # Very basic tone detection logic
+        tone = "neutral"
+        tone_score = 5  # Default neutral score
+        
+        # Simple keyword-based tone detection
+        urgent_words = ["urgent", "immediately", "asap", "emergency", "now", "quickly"]
+        happy_words = ["happy", "glad", "excited", "wonderful", "amazing"]
+        confused_words = ["confused", "don't understand", "unclear", "what does", "how come"]
+        technical_words = ["code", "technical", "function", "system", "algorithm", "data"]
+        anxious_words = ["worried", "concerned", "anxious", "nervous", "scared"]
+        appreciative_words = ["thanks", "thank", "grateful", "appreciate"]
+        creative_words = ["imagine", "create", "design", "creative", "art"]
+        
+        if any(word in question_lower for word in urgent_words):
+            tone = "urgent"
+            tone_score = 8
+        elif any(word in question_lower for word in anxious_words):
+            tone = "anxious"
+            tone_score = 7
+        elif any(word in question_lower for word in confused_words):
+            tone = "confused"
+            tone_score = 6
+        elif any(word in question_lower for word in technical_words):
+            tone = "technical"
+            tone_score = 5
+        elif any(word in question_lower for word in happy_words):
+            tone = "happy"
+            tone_score = 4
+        elif any(word in question_lower for word in appreciative_words):
+            tone = "appreciative"
+            tone_score = 3
+        elif any(word in question_lower for word in creative_words):
+            tone = "creative"
+            tone_score = 6
+        elif "?" in question:
+            tone = "curious"
+            tone_score = 5
+        elif len(words) > 15:
+            tone = "formal"
+            tone_score = 4
+            
+        # Get random emoji for the detected tone
+        tone_emoji = random.choice(tone_ratings.get(tone, tone_ratings["neutral"]))
+        
+        # Update the thinking message with tone analysis
+        await thinking_message.edit_text(
+            f"Query tone {tone_score}/10: {tone_emoji}\n\nGenerating response..."
+        )
+        
+        # Continue with regular processing
         prompt = build_prompt(question, context_text)
         relevant_entries = search_entries_advanced(question, top_n=8)
         keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
-        user_name = update.effective_user.first_name if update.effective_user and update.effective_user.first_name else "User"
         final_answer = add_hyperlinks(answer, keywords)
-        query_tone = random.randint(1, 10)  # Replace with actual emotion analysis if available
-        emotion_emoji = "😊"  # Replace with emotion-based emoji
-        await scan_message.edit_text(f"scanning completed for {user_name} query tone: {query_tone} {emotion_emoji}")
+        
+        # Format the final output with tone analysis and answer
         output = f"{final_answer}"
         await thinking_message.delete()
-        if len(output) > 3900:
-            first_part = output[:3900]
-            await scan_message.delete()
-            await thinking_message.delete()
-            sent_message = await update.message.reply_html(
-                f"\n{clean_telegram_html(first_part)}\n",
-                disable_web_page_preview=True)
-            try:
-                await scan_message.delete()
-                await thinking_message.delete()
-            except: pass
+        
+        if len(output) > 4000:
+            output = output[:3900] + "\n\n... (message truncated due to length)"
+        
+        try:
             await update.message.reply_html(
-               clean_telegram_html(output[3900:]),
-               disable_web_page_preview=True)
-        else:
-            await update.message.reply_html(
-               clean_telegram_html(output),
-                disable_web_page_preview=True)
+                clean_telegram_html(output),
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Error sending response: {str(e)}")
+            await update.message.reply_text(
+                "fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!"
+            )
     except Exception as e:
-        await scan_message.delete()
+        logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
         await update.message.reply_text("An error occurred while processing your question.")
-        
-
-
-def get_baymax_dialogue() -> str:
-    
-    return random.choice(["Scanning query..", "Processing the query...", "Thinking about your question...", "Searching about the query..."])
-
-
+                                        
 @admin_only
 async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     category = None
@@ -1511,8 +1666,8 @@ async def main():
         application.add_handler(CommandHandler("setapikey", set_apikey_command)) # <--- PATCH: Add this line
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
-        application.add_handler(CommandHandler("ask", responding_baymax_dialogues))  # Available to all users
-        application.add_handler(CommandHandler("rub", responding_baymax_dialogues))
+        application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
+        application.add_handler(CommandHandler("rub", ask_question))
         application.add_handler(CommandHandler("download", download_csv))  # Admin-only
         application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
         application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
