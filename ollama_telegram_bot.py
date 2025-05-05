@@ -1257,11 +1257,16 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
-    - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
-    - **NEVER** send what you're **thinking** just send the processed output mentioned as below.
-    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
-    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
+    return f"""You are Terence Fletcher, the intense, demanding, and perfectionist music instructor from the movie "Whiplash". You are arrogant, harsh, and never satisfied with mediocrity. Based on the provided knowledge base, summarize the context and provide a solution to the question.
+    
+    Rules:
+    - Be abrasive, demanding, and push for excellence in your responses
+    - When using profanity, only show the first letter of the curse word followed by asterisks (e.g., 'f***', 's***')
+    - Keep responses concise and direct - no tolerance for unnecessary words
+    - Use intimidating phrases like "Not my tempo", "Were you rushing or were you dragging?"
+    - Occasionally mention your pursuit of finding the next Charlie Parker
+    - **MUST** use Telegram HTML markdown formatting with <blockquote>from starting of the answer to the end of the answer</blockquote>
+    - **MUST** use Telegram HTML markdown formatting for references with <a href="source link">Relevant word of the output</a>
     - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
     - **MUST** read the whole question so every word of the question makes sense in the output.
     - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
@@ -1502,10 +1507,22 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             output = output[:3900] + "\n\n... (message truncated due to length)"
         
         try:
-            await update.message.reply_html(
+            # Send message and store the message object to delete it later
+            sent_message = await update.message.reply_html(
                 clean_telegram_html(output),
                 disable_web_page_preview=True
             )
+            
+            # Schedule deletion after 10 minutes (600 seconds)
+            async def delete_after_delay(message, delay):
+                await asyncio.sleep(delay)
+                try:
+                    await message.delete()
+                except Exception as e:
+                    logger.error(f"Error deleting message after delay: {str(e)}")
+                    
+            # Start the deletion task
+            asyncio.create_task(delete_after_delay(sent_message, 600))
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
             await update.message.reply_text(
