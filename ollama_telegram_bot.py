@@ -778,12 +778,12 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not question:
         # Use random Baymax quotes when replying without a question
         baymax_quotes = [
-            "Hello. I am Baymax, your personal healthcare companion.",
+            "Hello. I am Baymax, your personal quizcare companion.",
             "Are you satisfied with your care?",
             "On a scale of 1 to 10, how would you rate your pain?",
             "I am not fast.",
             "Hairy baby! Hairy baby!",
-            "Flying makes me a better healthcare companion.",
+            "Flying makes me a better quizcare companion.",
             "Tadashi is here.",
             "I cannot be deactivated until you say you are satisfied with your care.",
             "My programming prevents me from injuring a human being.",
@@ -1326,12 +1326,12 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not question:
         # Random Baymax quotes from IMDB when no question is provided
         baymax_quotes = [
-            "Hello. I am Baymax, your personal healthcare companion.",
+            "Hello. I am Baymax, your personal quizcare companion.",
             "Are you satisfied with your care?",
             "On a scale of 1 to 10, how would you rate your pain?",
             "I am not fast.",
             "Hairy baby! Hairy baby!",
-            "Flying makes me a better healthcare companion.",
+            "Flying makes me a better quizcare companion.",
             "Tadashi is here.",
             "I cannot be deactivated until you say you are satisfied with your care.",
             "My programming prevents me from injuring a human being.",
@@ -1366,7 +1366,8 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "anxious": ["😰", "😓", "😟"],
             "appreciative": ["🙏", "👍", "💯"],
             "neutral": ["📊", "🔄", "⚖️"],
-            "creative": ["🎨", "🌈", "✨"]
+            "creative": ["🎨", "🌈", "✨"],
+            "chatty": ["💬","🗨️","🗣️","💭","😁","😗","🙂‍↕️","🙂‍↔️", "🌈", "✨"]
         }
         
         # Determine tone based on question keywords (simplified approach)
@@ -1378,13 +1379,74 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         tone_score = 5  # Default neutral score
         
         # Simple keyword-based tone detection
-        urgent_words = ["urgent", "immediately", "asap", "emergency", "now", "quickly"]
-        happy_words = ["happy", "glad", "excited", "wonderful", "amazing"]
-        confused_words = ["confused", "don't understand", "unclear", "what does", "how come"]
-        technical_words = ["code", "technical", "function", "system", "algorithm", "data"]
-        anxious_words = ["worried", "concerned", "anxious", "nervous", "scared"]
-        appreciative_words = ["thanks", "thank", "grateful", "appreciate"]
-        creative_words = ["imagine", "create", "design", "creative", "art"]
+
+        # Further expanded lists of words commonly used in online chatting (at least 20 per list)
+        
+        urgent_words = [
+            "urgent", "immediately", "asap", "emergency", "now", "quickly",
+            "pls", "please", "fast", "critical", "priority", "stat",
+            "right away", "need this soon", "deadline", "pressing", "expedite",
+            "rush", "top priority", "high importance", "do it now", "don't delay",
+            "crucial", "vital", "immediate attention", "act fast" # Added more terms
+        ] # Now over 20 words
+        
+        happy_words = [
+            "happy", "glad", "excited", "wonderful", "amazing", "awesome",
+            "fantastic", "great", "super", "thrilled", "delighted", "joyful",
+            "pleased", "yay", "woohoo", "excellent", "perfect", "love it",
+            "brilliant", "sweet", "nice", "cool", "good news", "ecstatic",
+            "overjoyed", "stoked", "pumped", "elated", "cheerful", "blissful" # Added more terms
+        ] # Already over 20 words
+        
+        confused_words = [
+            "confused", "don't understand", "unclear", "what does", "how come",
+            "huh?", "??", "explain", "lost", "puzzled", "baffled",
+            "not following", "what do you mean", "clarify", "scratching my head",
+            "elaborate", "mind blown", "?", "wait, what?", "go over that again",
+            "doesn't make sense", "stumped", "mystified", "uncertain", "need details" # Added more terms
+        ] # Now over 20 words
+        
+        technical_words = [
+            "code", "technical", "function", "system", "algorithm", "data",
+            "bug", "debug", "API", "database", "server", "network",
+            "script", "variable", "syntax", "error", "deploy", "frontend",
+            "backend", "query", "test", "issue", "log", "feature", "framework",
+            "cloud", "pipeline", "module", "library", "dependency", "compile",
+            "runtime", "security", "user interface", "UI", "UX", "integration",
+            "version control", "git", "repository", "config", "parameter", "endpoint" # Added more terms
+        ] # Now over 20 words
+        
+        anxious_words = [
+            "worried", "concerned", "anxious", "nervous", "scared", "stressed",
+            "uneasy", "apprehensive", "on edge", "freaking out", "tense",
+            "dreading", "butterflies", "panicked", "fearful", "agitated",
+            "jittery", "troubled", "distressed", "on pins and needles", "worked up",
+            "in knots", "fretting", "overwhelmed", "uptight" # Added more terms
+        ] # Now over 20 words
+        
+        appreciative_words = [
+            "thanks", "thank", "grateful", "appreciate", "thank you", "thx",
+            "ty", "much obliged", "cheers", "props", "kudos", "thanks a lot",
+            "bless you", "very helpful", "good looking out", "much appreciated",
+            "you're a lifesaver", "couldn't have done it without you", " indebted",
+            "many thanks", "thanks a bunch", "you rock", "legend", "nice one", "you saved me" # Added more terms
+        ] # Now over 20 words
+        
+        creative_words = [
+            "imagine", "create", "design", "creative", "art", "brainstorm",
+            "innovate", "idea", "concept", "visualize", "build", "develop",
+            "prototype", "inspire", "original", "artistic", "invent", "envision",
+            "conceptualize", "ideate", "compose", "craft", "generate", "formulate",
+            "innovative", "imaginative", "sketch", "mockup", "storyboard" # Added more terms
+        ] # Now over 20 words
+        
+        chat_slang_words = [
+            "lol", "omg", "brb", "btw", "imo", "imho", "fyi", "afaik",
+            "ttyl", "np", "idk", "tbh", "rn", "smh", "ikr", "bff",
+            "wyd", "hmu", "gtg", "irl", "jk", "rofl", "lmao", "wfh",
+            "gr8", "cya", "dm", "pm", "ngl", "fr", "tmi", "yolo",
+            "fomo", "asl", "atm", "bbl", "k", "ok", "thnx" # Added more terms
+        ] # Now over 20 words
         
         if any(word in question_lower for word in urgent_words):
             tone = "urgent"
@@ -1392,6 +1454,9 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         elif any(word in question_lower for word in anxious_words):
             tone = "anxious"
             tone_score = 7
+        elif any(word in question_lower for word in chat_slang_words):
+            tone = "chatty"
+            tone_score = 1
         elif any(word in question_lower for word in confused_words):
             tone = "confused"
             tone_score = 6
@@ -1430,7 +1495,7 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         final_answer = add_hyperlinks(answer, keywords)
         
         # Format the final output with tone analysis and answer
-        output = f"{final_answer}"
+        output = f"Query tone {tone_score}/10: {tone_emoji}\n\n{final_answer}"
         await thinking_message.delete()
         
         if len(output) > 4000:
