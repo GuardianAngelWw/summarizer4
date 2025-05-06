@@ -44,8 +44,28 @@ except ImportError:
     raise ImportError("The 'rapidfuzz' library is required for fuzzy matching. Install it with 'pip install rapidfuzz'.")
 # No need for duplicate imports as they're already defined above
 
-# Global variable for slowmode seconds (default)
+# Global variables for configuration
 SLOWMODE_SECONDS = 3  # Default, can be changed via /slowmode command
+
+# Default prompt template - can be changed via /setprompt command
+DEFAULT_PROMPT_TEMPLATE = """You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
+    - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
+    - **NEVER** send what you're **thinking** just send the processed output mentioned as below.
+    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
+    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
+    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
+    - **MUST** read the whole question so every word of the question makes sense in the output.
+    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
+    - **NEVER** reply out-of-context or out of entries questions.
+
+    Question: {question}
+
+    Knowledge Base:
+    {context_text}"""
+
+# Current prompt template - initialized with default
+global CURRENT_PROMPT_TEMPLATE
+CURRENT_PROMPT_TEMPLATE = DEFAULT_PROMPT_TEMPLATE
 
 # Per-user per-command last called tracking (in-memory)
 _user_command_timestamps: Dict[Tuple[int, str], float] = {}
@@ -211,7 +231,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAGKsoDU9rGrHYrZTYM79cRgBsoxt0bEtTM"
+BOT_TOKEN = "6614402193:AAGFcMG_52I_d_HOlRbWJyN0LePw2GX3Pdw"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -336,6 +356,46 @@ def admin_only(func):
             
         return await func(update, context, *args, **kwargs)
     return wrapped
+
+@admin_only
+async def set_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Admin command to set the prompt template at runtime."""
+    # Check if there's any text after the command
+    if not context.args:
+        # No arguments provided, show the current prompt template and options
+        keyboard = [
+            [InlineKeyboardButton("Reset to Default", callback_data="reset_prompt:default")]
+        ]
+        await update.message.reply_text(
+            "📝 <b>Prompt Template Management</b>\n\n"
+            "Current prompt template format:\n"
+            f"<pre>{CURRENT_PROMPT_TEMPLATE[:200]}...</pre>\n\n"
+            "To set a new prompt template, use:\n"
+            "/setprompt [your new prompt template]\n\n"
+            "The prompt template must contain {question} and {context_text} placeholders.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+        
+    # Join all arguments to form the new prompt template
+    new_prompt = " ".join(context.args)
+    
+    # Check if the required placeholders are present
+    if "{question}" not in new_prompt or "{context_text}" not in new_prompt:
+        await update.message.reply_text(
+            "❌ Error: The prompt template must contain both {question} and {context_text} placeholders.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+        
+    # Update the prompt template
+    CURRENT_PROMPT_TEMPLATE = new_prompt
+    await update.message.reply_text(
+        "✅ Prompt template updated successfully.\n\n"
+        f"New template preview: <pre>{new_prompt[:100]}...</pre>",
+        parse_mode=ParseMode.HTML
+    )
 
 @admin_only
 async def set_model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -776,10 +836,37 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     question = command_text[5:].strip()  # Remove "/here "
     
     if not question:
-        await update.message.reply_text(
-            "Please provide a question after the /here command. For example:\n"
-            "/here What are some betrayal cases in wolfblood?"
+        # Use random Baymax quotes when replying without a question
+        baymax_quotes = [
+            "Hello. I am Baymax, your personal quizcare companion.",
+            "Are you satisfied with your care?",
+            "On a scale of 1 to 10, how would you rate your pain?",
+            "I am not fast.",
+            "Hairy baby! Hairy baby!",
+            "Flying makes me a better quizcare companion.",
+            "Tadashi is here.",
+            "I cannot be deactivated until you say you are satisfied with your care.",
+            "My programming prevents me from injuring a human being.",
+            "Your neurotransmitter levels are elevated. This indicates you are happy."
+        ]
+        import random
+        quote = random.choice(baymax_quotes)
+        
+        # Get the replied user and send them the Baymax quote
+        replied_msg = update.message.reply_to_message
+        replied_user = replied_msg.from_user
+        
+        await replied_msg.reply_html(
+            f"{replied_user.mention_html()} <blockquote>{quote}</blockquote>",
+            disable_web_page_preview=True
         )
+        
+        # Delete the command message
+        try:
+            await update.message.delete()
+        except Exception as e:
+            logger.error(f"Error deleting message: {str(e)}")
+            
         return
     
     # Get the message this is replying to
@@ -787,7 +874,7 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     replied_user = replied_msg.from_user
     
     # Send initial thinking message
-    thinking_message = await update.message.reply_text("🤔 Thinking about your question... This might take a moment.")
+    thinking_message = await update.message.reply_text("Scanning query tone ...")
     
     context_text = get_context_for_question(question, top_n=8)
     if not context_text.strip():
@@ -800,9 +887,77 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        await thinking_message.edit_text("🤔")
         await load_llm()
-        await thinking_message.edit_text("⚡")
+        
+        # Analyze query tone (simplified version)
+        import random
+        tone_ratings = {
+            "curious": ["🤔", "🧐", "❓"],
+            "urgent": ["⚠️", "⏰", "🔥"],
+            "happy": ["😊", "🙂", "😄"],
+            "confused": ["😕", "🤨", "🙃"],
+            "formal": ["🧑‍💼", "📝", "🔍"],
+            "technical": ["💻", "🔧", "⚙️"],
+            "anxious": ["😰", "😓", "😟"],
+            "appreciative": ["🙏", "👍", "💯"],
+            "neutral": ["📊", "🔄", "⚖️"],
+            "creative": ["🎨", "🌈", "✨"]
+        }
+        
+        # Determine tone based on question keywords (simplified approach)
+        question_lower = question.lower()
+        words = question_lower.split()
+        
+        # Very basic tone detection logic
+        tone = "neutral"
+        tone_score = 5  # Default neutral score
+        
+        # Simple keyword-based tone detection
+        urgent_words = ["urgent", "immediately", "asap", "emergency", "now", "quickly"]
+        happy_words = ["happy", "glad", "excited", "wonderful", "amazing"]
+        confused_words = ["confused", "don't understand", "unclear", "what does", "how come"]
+        technical_words = ["code", "technical", "function", "system", "algorithm", "data"]
+        anxious_words = ["worried", "concerned", "anxious", "nervous", "scared"]
+        appreciative_words = ["thanks", "thank", "grateful", "appreciate"]
+        creative_words = ["imagine", "create", "design", "creative", "art"]
+        
+        if any(word in question_lower for word in urgent_words):
+            tone = "urgent"
+            tone_score = 8
+        elif any(word in question_lower for word in anxious_words):
+            tone = "anxious"
+            tone_score = 7
+        elif any(word in question_lower for word in confused_words):
+            tone = "confused"
+            tone_score = 6
+        elif any(word in question_lower for word in technical_words):
+            tone = "technical"
+            tone_score = 5
+        elif any(word in question_lower for word in happy_words):
+            tone = "happy"
+            tone_score = 4
+        elif any(word in question_lower for word in appreciative_words):
+            tone = "appreciative"
+            tone_score = 3
+        elif any(word in question_lower for word in creative_words):
+            tone = "creative"
+            tone_score = 6
+        elif "?" in question:
+            tone = "curious"
+            tone_score = 5
+        elif len(words) > 15:
+            tone = "formal"
+            tone_score = 4
+            
+        # Get random emoji for the detected tone
+        tone_emoji = random.choice(tone_ratings.get(tone, tone_ratings["neutral"]))
+        
+        # Update the thinking message with tone analysis
+        await thinking_message.edit_text(
+            f"Query tone {tone_score}/10: {tone_emoji}\n\nGenerating response..."
+        )
+        
+        # Continue with regular processing
         prompt = build_prompt(question, context_text)
 
         # Build keywords from relevant entries for hyperlinks
@@ -1149,6 +1304,15 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             ]
         ]
         await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("reset_prompt:"):
+        if data == "reset_prompt:default":
+            global CURRENT_PROMPT_TEMPLATE, DEFAULT_PROMPT_TEMPLATE
+            CURRENT_PROMPT_TEMPLATE = DEFAULT_PROMPT_TEMPLATE
+            await query.edit_message_text(
+                "✅ Prompt template has been reset to default.\n\n"
+                f"Default template preview: <pre>{DEFAULT_PROMPT_TEMPLATE[:100]}...</pre>",
+                parse_mode=ParseMode.HTML
+            )
     elif data.startswith("confirm_clear:"):
         category_filter = data.split(":")[1]
         category = None if category_filter == 'all' else category_filter
@@ -1162,20 +1326,9 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 # Helper functions for ask_question
 def build_prompt(question: str, context_text: str) -> str:
-    return f"""You are an AI assistant with relatively high egoistic nature. Based on the provided knowledge base, summarize the context and provide a solution to the question without repeating it in the response:
-    - While answering, ensure the answer is concise, understandable, and easy to follow and in very short brief.
-    - **NEVER** send what you're **thinking** just send the processed output mentioned as below.
-    - **MUST** use Telegram HTML markdown formatting for every answer with <blockquote>from starting of the answer to the end of the answer</blockquote>
-    - **MUST** use Telegram HTML markdown formatting for every answer with <a href="source link">Relevant word of the output</a>.
-    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
-    - **MUST** read the whole question so every word of the question makes sense in the output.
-    - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
-    - **NEVER** reply out-of-context or out of entries questions.
-
-    Question: {question}
-
-    Knowledge Base:
-    {context_text}"""
+    # Use the global prompt template and format it with the question and context
+    global CURRENT_PROMPT_TEMPLATE
+    return CURRENT_PROMPT_TEMPLATE.format(question=question, context_text=context_text)
 
 
 def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
@@ -1229,38 +1382,204 @@ async def generate_response(prompt: str, _, __=None) -> str:
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     question = " ".join(context.args)
     if not question:
-        await update.message.reply_text(
-            "Please provide a question after the /ask command. For example:\n"
-            "/ask Whose birthdays are in the month of April?"
-        )
+        # Random Baymax quotes from IMDB when no question is provided
+        baymax_quotes = [
+            "Hello. I am Baymax, your personal quizcare companion.",
+            "Are you satisfied with your care?",
+            "On a scale of 1 to 10, how would you rate your pain?",
+            "I am not fast.",
+            "Hairy baby! Hairy baby!",
+            "Flying makes me a better quizcare companion.",
+            "Tadashi is here.",
+            "I cannot be deactivated until you say you are satisfied with your care.",
+            "My programming prevents me from injuring a human being.",
+            "Your neurotransmitter levels are elevated. This indicates you are happy."
+        ]
+        import random
+        quote = random.choice(baymax_quotes)
+        await update.message.reply_html(f"<blockquote>{quote}</blockquote>")
         return
+    # First, send the scanning message
     thinking_message = await update.message.reply_text("💣")
+    
     # PATCH: Use search-then-summarize for context
     context_text = get_context_for_question(question, top_n=8)
     if not context_text.strip():
         await thinking_message.delete()
         await update.message.reply_text("No knowledge entries found to answer your question.")
         return
+    
     try:
         await load_llm()
+        
+        # Analyze query tone (simplified version)
+        import random
+        tone_ratings = {
+            "curious": ["🤔", "🧐", "❓"],
+            "urgent": ["⚠️", "⏰", "🔥"],
+            "happy": ["😊", "🙂", "😄"],
+            "confused": ["😕", "🤨", "🙃"],
+            "formal": ["🧑‍💼", "📝", "🔍"],
+            "technical": ["💻", "🔧", "⚙️"],
+            "anxious": ["😰", "😓", "😟"],
+            "appreciative": ["🙏", "👍", "💯"],
+            "neutral": ["📊", "🔄", "⚖️"],
+            "creative": ["🎨", "🌈", "✨"],
+            "chatty": ["💬","🗨️","🗣️","💭","😁","😗","🙂‍↕️","🙂‍↔️", "🌈", "✨"]
+        }
+        
+        # Determine tone based on question keywords (simplified approach)
+        question_lower = question.lower()
+        words = question_lower.split()
+        
+        # Very basic tone detection logic
+        tone = "neutral"
+        tone_score = 5  # Default neutral score
+        
+        # Simple keyword-based tone detection
+
+        # Further expanded lists of words commonly used in online chatting (at least 20 per list)
+        
+        urgent_words = [
+            "urgent", "immediately", "asap", "emergency", "now", "quickly",
+            "pls", "please", "fast", "critical", "priority", "stat",
+            "right away", "need this soon", "deadline", "pressing", "expedite",
+            "rush", "top priority", "high importance", "do it now", "don't delay",
+            "crucial", "vital", "immediate attention", "act fast" # Added more terms
+        ] # Now over 20 words
+        
+        happy_words = [
+            "happy", "glad", "excited", "wonderful", "amazing", "awesome",
+            "fantastic", "great", "super", "thrilled", "delighted", "joyful",
+            "pleased", "yay", "woohoo", "excellent", "perfect", "love it",
+            "brilliant", "sweet", "nice", "cool", "good news", "ecstatic",
+            "overjoyed", "stoked", "pumped", "elated", "cheerful", "blissful" # Added more terms
+        ] # Already over 20 words
+        
+        confused_words = [
+            "confused", "don't understand", "unclear", "what does", "how come",
+            "huh?", "??", "explain", "lost", "puzzled", "baffled",
+            "not following", "what do you mean", "clarify", "scratching my head",
+            "elaborate", "mind blown", "?", "wait, what?", "go over that again",
+            "doesn't make sense", "stumped", "mystified", "uncertain", "need details" # Added more terms
+        ] # Now over 20 words
+        
+        technical_words = [
+            "code", "technical", "function", "system", "algorithm", "data",
+            "bug", "debug", "API", "database", "server", "network",
+            "script", "variable", "syntax", "error", "deploy", "frontend",
+            "backend", "query", "test", "issue", "log", "feature", "framework",
+            "cloud", "pipeline", "module", "library", "dependency", "compile",
+            "runtime", "security", "user interface", "UI", "UX", "integration",
+            "version control", "git", "repository", "config", "parameter", "endpoint" # Added more terms
+        ] # Now over 20 words
+        
+        anxious_words = [
+            "worried", "concerned", "anxious", "nervous", "scared", "stressed",
+            "uneasy", "apprehensive", "on edge", "freaking out", "tense",
+            "dreading", "butterflies", "panicked", "fearful", "agitated",
+            "jittery", "troubled", "distressed", "on pins and needles", "worked up",
+            "in knots", "fretting", "overwhelmed", "uptight" # Added more terms
+        ] # Now over 20 words
+        
+        appreciative_words = [
+            "thanks", "thank", "grateful", "appreciate", "thank you", "thx",
+            "ty", "much obliged", "cheers", "props", "kudos", "thanks a lot",
+            "bless you", "very helpful", "good looking out", "much appreciated",
+            "you're a lifesaver", "couldn't have done it without you", " indebted",
+            "many thanks", "thanks a bunch", "you rock", "legend", "nice one", "you saved me" # Added more terms
+        ] # Now over 20 words
+        
+        creative_words = [
+            "imagine", "create", "design", "creative", "art", "brainstorm",
+            "innovate", "idea", "concept", "visualize", "build", "develop",
+            "prototype", "inspire", "original", "artistic", "invent", "envision",
+            "conceptualize", "ideate", "compose", "craft", "generate", "formulate",
+            "innovative", "imaginative", "sketch", "mockup", "storyboard" # Added more terms
+        ] # Now over 20 words
+        
+        chat_slang_words = [
+            "lol", "omg", "brb", "btw", "imo", "imho", "fyi", "afaik",
+            "ttyl", "np", "idk", "tbh", "rn", "smh", "ikr", "bff",
+            "wyd", "hmu", "gtg", "irl", "jk", "rofl", "lmao", "wfh",
+            "gr8", "cya", "dm", "pm", "ngl", "fr", "tmi", "yolo",
+            "fomo", "asl", "atm", "bbl", "k", "ok", "thnx" # Added more terms
+        ] # Now over 20 words
+        
+        if any(word in question_lower for word in urgent_words):
+            tone = "urgent"
+            tone_score = 8
+        elif any(word in question_lower for word in anxious_words):
+            tone = "anxious"
+            tone_score = 7
+        elif any(word in question_lower for word in chat_slang_words):
+            tone = "chatty"
+            tone_score = 1
+        elif any(word in question_lower for word in confused_words):
+            tone = "confused"
+            tone_score = 6
+        elif any(word in question_lower for word in technical_words):
+            tone = "technical"
+            tone_score = 5
+        elif any(word in question_lower for word in happy_words):
+            tone = "happy"
+            tone_score = 4
+        elif any(word in question_lower for word in appreciative_words):
+            tone = "appreciative"
+            tone_score = 3
+        elif any(word in question_lower for word in creative_words):
+            tone = "creative"
+            tone_score = 6
+        elif "?" in question:
+            tone = "curious"
+            tone_score = 5
+        elif len(words) > 15:
+            tone = "formal"
+            tone_score = 4
+            
+        # Get random emoji for the detected tone
+        tone_emoji = random.choice(tone_ratings.get(tone, tone_ratings["neutral"]))
+        
+        # Update the thinking message with tone analysis
+#        await thinking_message.edit_text(
+#            f"Query tone {tone_score}/10: {tone_emoji}\n\nGenerating response..."
+#        )
+        
+        # Continue with regular processing
         prompt = build_prompt(question, context_text)
         relevant_entries = search_entries_advanced(question, top_n=8)
         keywords = {entry["text"]: entry["link"] for entry in relevant_entries}
         answer = await generate_response(prompt, None, None)
         final_answer = add_hyperlinks(answer, keywords)
+        
+        # Format the final output with tone analysis and answer
         output = f"{final_answer}"
         await thinking_message.delete()
+        
         if len(output) > 4000:
             output = output[:3900] + "\n\n... (message truncated due to length)"
+        
         try:
-            await update.message.reply_html(
+            # Send message and store the message object to delete it later
+            sent_message = await update.message.reply_html(
                 clean_telegram_html(output),
                 disable_web_page_preview=True
             )
+            
+            # Schedule deletion after 10 minutes (600 seconds)
+            async def delete_after_delay(message, delay):
+                await asyncio.sleep(delay)
+                try:
+                    await message.delete()
+                except Exception as e:
+                    logger.error(f"Error deleting message after delay: {str(e)}")
+                    
+            # Start the deletion task
+            asyncio.create_task(delete_after_delay(sent_message, 600))
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
             await update.message.reply_text(
-                "fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!"
+                "👉👈 🥹"
             )
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
@@ -1480,6 +1799,7 @@ async def main():
         application.add_handler(CommandHandler("help", start))
         application.add_handler(CommandHandler("setmodel", set_model_command))   # <--- PATCH: Add this line
         application.add_handler(CommandHandler("setapikey", set_apikey_command)) # <--- PATCH: Add this line
+        application.add_handler(CommandHandler("setprompt", set_prompt_command)) # <--- Added for runtime prompt update
         application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
         application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
         application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
@@ -1499,6 +1819,7 @@ async def main():
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^confirm_clear:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^cancel_clear$"))
+        application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^reset_prompt:"))
         application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
     
