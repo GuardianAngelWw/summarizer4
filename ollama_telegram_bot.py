@@ -1826,7 +1826,7 @@ async def main():
         # Document handler for CSV upload - more permissive to handle different formats
         application.add_handler(
             MessageHandler(
-                (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
+                filters.Document.FileExtension(".csv") & 
                 filters.REPLY, 
                 handle_csv_upload
             )
