@@ -1824,10 +1824,12 @@ async def main():
         application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
     
         # Document handler for CSV upload - more permissive to handle different formats
+# Add a handler for CSV file uploads (in reply to messages)
         application.add_handler(
             MessageHandler(
-                filters.Document.FileExtension(".csv") & 
-                filters.REPLY, 
+                # This filter ensures ONLY .csv files are accepted
+                # and only when sent as a reply to another message
+                filters.Document.FileExtension(".csv") & filters.REPLY,
                 handle_csv_upload
             )
         )
