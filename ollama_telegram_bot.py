@@ -237,7 +237,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAFrpHe8COs186ZUGxbSgs6UFEQ5bGXPZtQ"
+BOT_TOKEN = "6642970632:AAHFAcdtq2CnVP5YTHdUHvbA-DdQkSG_rj0"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -357,7 +357,24 @@ def admin_only(func):
         
         # Check if user is an admin
         if not await is_admin(context, chat_id, user_id):
-            await update.message.reply_text("Sorry, this command is restricted to admins only.")
+            # Use cute anime-style rejection messages
+            kawaii_rejection_messages = [
+                "Ara ara~ little one  (◕‿◕✿)",
+                "Gomen ne!  (´｡• ᵕ •｡`)",
+                "Sumimasen!  ヽ(；▽；)ノ",
+                "Nyaa~  (=^･ω･^=)",
+                "Ehehe~  (◠‿◠✿)",
+                "Uwaaah!  (≧﹏≦)",
+                "Kyaaaa!  (・ω・)ノ",
+                "Oh my, oh my~  (✿◠‿◠)",
+                "*Pokes fingers together*  (⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)",
+                "Nani?!  (☆▽☆)",
+                "Yare yare...  (￣ヘ￣)",
+                "Eto...  (◕ᴗ◕✿)"
+            ]
+            import random
+            rejection_message = random.choice(kawaii_rejection_messages)
+            await update.message.reply_text(rejection_message)
             return
             
         return await func(update, context, *args, **kwargs)
@@ -366,6 +383,8 @@ def admin_only(func):
 @admin_only
 async def set_prompt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Admin command to set the prompt template at runtime."""
+    global CURRENT_PROMPT_TEMPLATE  # Add global keyword here
+    
     # Check if there's any text after the command
     if not context.args:
         # No arguments provided, show the current prompt template and options
@@ -1174,7 +1193,24 @@ async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if data.startswith(("delete:", "clear:", "confirm_clear:")):
         is_user_admin = await is_admin(context, chat_id, user_id)
         if not is_user_admin:
-            await query.answer("Sorry, only admins can use these controls.", show_alert=True)
+            # Use cute anime-style rejection messages
+            kawaii_rejection_messages = [
+                "Ara ara~ You don't have permission for that, little one (◕‿◕✿)",
+                "Gomen ne! Only senpais can use this command (´｡• ᵕ •｡`)",
+                "Sumimasen! This feature is for admins only ヽ(；▽；)ノ",
+                "Nyaa~ That's an admin-only button! (=^･ω･^=)",
+                "Ehehe~ You need special powers for that! (◠‿◠✿)",
+                "Uwaaah! That's for admin-senpais only! (≧﹏≦)",
+                "Kyaaaa! You can't do that yet! Maybe ask an admin? (・ω・)ノ",
+                "Oh my, oh my~ That's a special command for admins (✿◠‿◠)",
+                "*Pokes fingers together* S-Sorry, only admins can do that (⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)",
+                "Nani?! This power is too strong for you! Admin only! (☆▽☆)",
+                "Yare yare... You'll need admin privileges for that (￣ヘ￣)",
+                "Eto... This button is for admins only, desu! (◕ᴗ◕✿)"
+            ]
+            import random
+            rejection_message = random.choice(kawaii_rejection_messages)
+            await query.answer(rejection_message, show_alert=True)
             return
 
     await query.answer()
