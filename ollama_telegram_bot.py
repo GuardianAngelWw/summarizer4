@@ -268,13 +268,13 @@ ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
-# Update the model configuration for OpenRouter API
-OPENROUTER_API_KEY = "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"
-OPENROUTER_MODEL = "deepseek/deepseek-prover-v2:free"  # Default OpenRouter model
+# Update the model configuration for Google AI Studio (Gemini API)
+GEMINI_API_KEY = "AIzaSyDzDyEhZ7U5koOO8wC1NVyLc4wDFfeIlUc"  # Replace with your Gemini API key
+GEMINI_MODEL = "gemini-2.0-flash-lite"  # Default Gemini model
 
 # Global mutable configuration for runtime updates via admin commands
-CURRENT_AI_MODEL = OPENROUTER_MODEL
-CURRENT_AI_API_KEY = OPENROUTER_API_KEY
+CURRENT_AI_MODEL = GEMINI_MODEL
+CURRENT_AI_API_KEY = GEMINI_API_KEY
 
 def set_ai_model(new_model: str) -> bool:
     global CURRENT_AI_MODEL
@@ -297,7 +297,7 @@ def set_ai_api_key(new_key: str) -> bool:
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-logger.info(f"Using OpenRouter API with model {OPENROUTER_MODEL}")
+logger.info(f"Using Google AI Studio API with model {GEMINI_MODEL}")
 logger.info("Bot initialization successful")  # Instead of logging the token
 
 # Remove Flask routes for health monitoring
@@ -307,7 +307,7 @@ logger.info("Bot initialization successful")  # Instead of logging the token
 # def root():...
 
 # Log the model loading
-logger.info(f"Bot started with OpenRouter API")
+logger.info(f"Bot started with Google AI Studio API")
 
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
@@ -788,16 +788,16 @@ def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str,
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
-# Updated load_llm function to use OpenRouter API
+# Updated load_llm function to use Google AI Studio (Gemini API)
 async def load_llm():
     try:
-        logger.info(f"Using OpenRouter API with model: {CURRENT_AI_MODEL}")
+        logger.info(f"Using Google AI Studio with model: {CURRENT_AI_MODEL}")
         if not CURRENT_AI_API_KEY:
             logger.error("AI API key is not set. Please set it with /setapikey.")
             raise ValueError("AI API key is required")
-        return {"openrouter_client": True}
+        return {"gemini_client": True}
     except Exception as e:
-        logger.error(f"Error initializing OpenRouter client: {str(e)}")
+        logger.error(f"Error initializing Google AI client: {str(e)}")
         raise
 
 def get_context_for_question(question: str, category: Optional[str] = None, top_n: int = 8) -> str:
@@ -1392,33 +1392,31 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
 
 async def generate_response(prompt: str, _, __=None) -> str:
     try:
-        logger.info("Sending request to OpenRouter API...")
+        logger.info("Sending request to Google AI Studio API...")
         
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {CURRENT_AI_API_KEY}",
-            "HTTP-Referer": "https://github.com/yourusername/telegram-summarizer-bot",  # Should be your site URL
-            "X-Title": "Telegram Summarizer Bot"  # Should be your app name
-        }
+        # Import google.generativeai library
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            logger.error("google.generativeai library not found. Installing...")
+            import subprocess
+            import sys
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "google-generativeai"])
+            import google.generativeai as genai
         
-        payload = {
-            "model": CURRENT_AI_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7,
-            "max_tokens": 800,
-        }
+        # Configure the Gemini API
+        genai.configure(api_key=CURRENT_AI_API_KEY)
         
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=payload
-        )
+        # Create a client
+        model = genai.GenerativeModel(CURRENT_AI_MODEL)
         
-        response.raise_for_status()  # Raise exception for HTTP errors
-        response_data = response.json()
+        # Generate content
+        response = model.generate_content(prompt)
         
-        answer = response_data['choices'][0]['message']['content']
-        logger.info("Received response from OpenRouter API")
+        # Extract the text response
+        answer = response.text
+        
+        logger.info("Received response from Google AI Studio API")
         return answer.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
