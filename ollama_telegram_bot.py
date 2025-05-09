@@ -1,3 +1,7 @@
+# Telegram Summarizer Bot using OpenRouter API
+# This version has been updated to use OpenRouter API instead of Groq
+# Google Cloud Run components have been removed for simpler deployment
+
 import os
 import csv
 import sys
@@ -32,11 +36,9 @@ from telegram.ext import (
 from telegram.constants import ParseMode, ChatType
 import requests
 import json
-from flask import Flask, jsonify
 import logging.handlers
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import CommandHandler, CallbackQueryHandler
-# Groq API client will be imported as needed
 # Add fuzzy matching for advanced search-then-summarize (preferred: rapidfuzz)
 try:
     from rapidfuzz import fuzz
@@ -266,13 +268,13 @@ ENTRIES_FILE = "entries.csv"
 CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
-# Update the model configuration for Groq API
-TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
+# Update the model configuration for OpenRouter API
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+OPENROUTER_MODEL = "deepseek/deepseek-prover-v2:free"  # Default OpenRouter model
 
 # Global mutable configuration for runtime updates via admin commands
-CURRENT_AI_MODEL = GROQ_MODEL
-CURRENT_AI_API_KEY = TOGETHER_API_KEY
+CURRENT_AI_MODEL = OPENROUTER_MODEL
+CURRENT_AI_API_KEY = OPENROUTER_API_KEY
 
 def set_ai_model(new_model: str) -> bool:
     global CURRENT_AI_MODEL
@@ -290,35 +292,22 @@ def set_ai_api_key(new_key: str) -> bool:
     logger.info("AI API key updated (not shown for security).")
     return True
 
-# Flask app initialization
-app = Flask(__name__)
+# Remove Flask app initialization
+# app = Flask(__name__)
 
 # Modify the startup logging to be more secure (around line 72)
 logger.info(f"Bot starting at {datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-logger.info(f"Using Groq API with model {GROQ_MODEL}")
+logger.info(f"Using OpenRouter API with model {OPENROUTER_MODEL}")
 logger.info("Bot initialization successful")  # Instead of logging the token
 
-# Flask routes for health monitoring
-@app.route('/health')
-def health_check():
-    """Health check endpoint for container monitoring"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.datetime.utcnow().isoformat(),
-        'version': '1.0.0'
-    }), 200
-
-@app.route('/')
-def root():
-    """Root endpoint with basic information"""
-    return jsonify({
-        'service': 'Summarizer Bot',
-        'status': 'running',
-        'documentation': '/health for health check endpoint'
-    }), 200
+# Remove Flask routes for health monitoring
+# @app.route('/health')
+# def health_check():...
+# @app.route('/')
+# def root():...
 
 # Log the model loading
-logger.info(f"Bot started with TOGETHER API")
+logger.info(f"Bot started with OpenRouter API")
 
 # Pagination configuration
 ENTRIES_PER_PAGE = 5
@@ -799,16 +788,16 @@ def search_entries(query: str, category: Optional[str] = None) -> List[Dict[str,
             query in entry["text"].lower() or 
             query in entry.get("category", "").lower()]
 
-# Updated load_llm function to use Groq API
+# Updated load_llm function to use OpenRouter API
 async def load_llm():
     try:
-        logger.info(f"Using Groq API with model: {CURRENT_AI_MODEL}")
+        logger.info(f"Using OpenRouter API with model: {CURRENT_AI_MODEL}")
         if not CURRENT_AI_API_KEY:
             logger.error("AI API key is not set. Please set it with /setapikey.")
             raise ValueError("AI API key is required")
-        return {"groq_client": True}
+        return {"openrouter_client": True}
     except Exception as e:
-        logger.error(f"Error initializing Groq client: {str(e)}")
+        logger.error(f"Error initializing OpenRouter client: {str(e)}")
         raise
 
 def get_context_for_question(question: str, category: Optional[str] = None, top_n: int = 8) -> str:
@@ -1403,18 +1392,33 @@ def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
 
 async def generate_response(prompt: str, _, __=None) -> str:
     try:
-        logger.info("Sending request to Groq API...")
-        import groq
-        client = groq.AsyncGroq(api_key=CURRENT_AI_API_KEY)
-        chat_completion = await client.chat.completions.create(
-            model=CURRENT_AI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=800,
-            top_p=0.95
+        logger.info("Sending request to OpenRouter API...")
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {CURRENT_AI_API_KEY}",
+            "HTTP-Referer": "https://github.com/yourusername/telegram-summarizer-bot",  # Should be your site URL
+            "X-Title": "Telegram Summarizer Bot"  # Should be your app name
+        }
+        
+        payload = {
+            "model": CURRENT_AI_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "max_tokens": 800,
+        }
+        
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload
         )
-        answer = chat_completion.choices[0].message.content
-        logger.info("Received response from Groq API")
+        
+        response.raise_for_status()  # Raise exception for HTTP errors
+        response_data = response.json()
+        
+        answer = response_data['choices'][0]['message']['content']
+        logger.info("Received response from OpenRouter API")
         return answer.strip()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
@@ -1839,21 +1843,21 @@ async def main():
         # Standard command handlers
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", start))
-        application.add_handler(CommandHandler("setmodel", set_model_command))   # <--- PATCH: Add this line
-        application.add_handler(CommandHandler("setapikey", set_apikey_command)) # <--- PATCH: Add this line
-        application.add_handler(CommandHandler("setprompt", set_prompt_command)) # <--- Added for runtime prompt update
-        application.add_handler(CommandHandler("list", list_entries))  # Now admin-only
-        application.add_handler(CommandHandler("add", add_entry_command))  # Still admin-only
-        application.add_handler(CommandHandler("ask", ask_question))  # Available to all users
+        application.add_handler(CommandHandler("setmodel", set_model_command))
+        application.add_handler(CommandHandler("setapikey", set_apikey_command))
+        application.add_handler(CommandHandler("setprompt", set_prompt_command))
+        application.add_handler(CommandHandler("list", list_entries))
+        application.add_handler(CommandHandler("add", add_entry_command))
+        application.add_handler(CommandHandler("ask", ask_question))
         application.add_handler(CommandHandler("rub", ask_question))
-        application.add_handler(CommandHandler("download", download_csv))  # Admin-only
-        application.add_handler(CommandHandler("upload", request_csv_upload))  # Admin-only
-        application.add_handler(CommandHandler("clear", clear_all_entries_command))  # New admin-only command
-        application.add_handler(CommandHandler("here", here_command))  # Available to all users
-        application.add_handler(CommandHandler("logs", show_logs))  # New logs command
+        application.add_handler(CommandHandler("download", download_csv))
+        application.add_handler(CommandHandler("upload", request_csv_upload))
+        application.add_handler(CommandHandler("clear", clear_all_entries_command))
+        application.add_handler(CommandHandler("here", here_command))
+        application.add_handler(CommandHandler("logs", show_logs))
         application.add_handler(CommandHandler("s", show_entry_command))
         application.add_handler(CommandHandler("i", insert_entry_command))
-        application.add_handler(CommandHandler("slowmode", slowmode_command))  # Admins only
+        application.add_handler(CommandHandler("slowmode", slowmode_command))
         # Enhanced callback query handlers
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^page:"))
         application.add_handler(CallbackQueryHandler(handle_pagination, pattern=r"^delete:"))
@@ -1865,8 +1869,7 @@ async def main():
         application.add_handler(CallbackQueryHandler(handle_csv_action, pattern=r"^csv:"))
         application.add_handler(CallbackQueryHandler(handle_single_entry_delete, pattern=r"^sdelete:\d+$"))
     
-        # Document handler for CSV upload - more permissive to handle different formats
-# Add a handler for CSV file uploads (in reply to messages)
+        # Document handler for CSV file uploads (in reply to messages)
         application.add_handler(
             MessageHandler(
                 (filters.Document.ALL | filters.Document.FileExtension(".csv")) & 
@@ -1874,22 +1877,8 @@ async def main():
                 handle_csv_upload
             )
         )
-    
-        # Start health check server (if needed)
-        # Note: We comment this out because the run_health_server function might not exist
-        # health_thread = threading.Thread(target=run_health_server, daemon=True)
-        # health_thread.start()
         
-        # Schedule periodic health checks
-        async def periodic_health_check():
-            while True:
-                await status_monitor.send_health_check()
-                await asyncio.sleep(3600)  # Check every hour
-        
-        # Create the health check task
-        health_check_task = asyncio.create_task(periodic_health_check())
-        
-        # Run the bot (only run once)
+        # Run the bot
         await application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Exception as e:
         # Send shutdown notification with error
@@ -1901,30 +1890,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Since we're using nest_asyncio, we can run both Flask and the Telegram bot
-    import threading
-    import asyncio
-    
-    def start_flask():
-        try:
-            # Try to use waitress for production deployment
-            try:
-                from waitress import serve
-                logger.info("Starting Flask server with waitress on port 8081")
-                serve(app, host="0.0.0.0", port=8081)
-            except ImportError:
-                # Fallback to Flask's built-in server
-                logger.info("Waitress not available, using Flask's built-in server on port 8081")
-                app.run(host="0.0.0.0", port=8081, debug=False)
-        except Exception as e:
-            logger.error(f"Failed to start Flask server: {e}")
-    
-    # Start Flask in a background thread
-    flask_thread = threading.Thread(target=start_flask)
-    flask_thread.daemon = True  # Thread will exit when main thread exits
-    flask_thread.start()
-    
-    # Start the Telegram bot in the main thread
+    # No need for Flask server since we're removing Google Cloud Run
+    # Run the Telegram bot directly
     logger.info("Starting Summarizer2 Telegram Bot")
     try:
         # With nest_asyncio.apply() already called, we can use asyncio.run safely
