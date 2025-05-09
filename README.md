@@ -20,7 +20,62 @@ This repository contains a Telegram bot designed to run on Google Cloud Run usin
 
 ## Deployment Options
 
-### Option 1: One-Click Deployment Script
+### Option 1: Cloud Build Automatic Deployment (NEW)
+
+This is the simplest way to deploy your bot with continuous integration:
+
+1. Create a new Google Cloud project
+2. Set up required secrets in Secret Manager
+3. Connect your repository to Cloud Build
+4. The bot will be automatically deployed and configured
+
+**Detailed steps:**
+
+1. **Create a new project and set it as active:**
+   ```bash
+   gcloud projects create your-project-name
+   gcloud config set project your-project-name
+   ```
+
+2. **Create and set up the required secrets:**
+   ```bash
+   # Enable Secret Manager API
+   gcloud services enable secretmanager.googleapis.com
+   
+   # Create secrets
+   gcloud secrets create telegram-bot-token --replication-policy=automatic
+   gcloud secrets create groq-api-key --replication-policy=automatic
+   gcloud secrets create admin-user-ids --replication-policy=automatic
+   
+   # Add values to secrets
+   echo -n "YOUR_BOT_TOKEN" | gcloud secrets versions add telegram-bot-token --data-file=-
+   echo -n "YOUR_GROQ_API_KEY" | gcloud secrets versions add groq-api-key --data-file=-
+   echo -n "YOUR_ADMIN_ID1,YOUR_ADMIN_ID2" | gcloud secrets versions add admin-user-ids --data-file=-
+   ```
+
+3. **Connect repository to Cloud Build:**
+   - Go to Google Cloud Console > Cloud Build > Triggers
+   - Click "Connect Repository" and select your repository
+   - Create a new trigger:
+     - Name: "Deploy Telegram Bot"
+     - Event: Push to a branch
+     - Source: Your repository branch (e.g., main)
+     - Configuration: Repository (Cloud Build configuration file)
+     - Location: `/cloudbuild.yaml`
+   - Click "Create"
+
+4. **Run the trigger manually the first time:**
+   - In the triggers list, click "Run" on your new trigger
+   - This initial build will:
+     - Enable all required services
+     - Set up Firestore database
+     - Create and configure service accounts
+     - Build and deploy your bot
+     - Set up the Telegram webhook
+
+After this setup, any changes pushed to your repository will automatically trigger a rebuild and redeployment of your bot.
+
+### Option 2: One-Click Deployment Script
 
 1. Clone this repository:
    ```bash
@@ -46,7 +101,7 @@ This repository contains a Telegram bot designed to run on Google Cloud Run usin
    ./deployment-commands.sh
    ```
 
-### Option 2: Manual Deployment
+### Option 3: Manual Deployment
 
 For a step-by-step manual deployment, follow these instructions:
 
