@@ -1,0 +1,56 @@
+steps:
+# Build the container image
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-t', 'gcr.io/$PROJECT_ID/telegram-bot:$COMMIT_SHA', '.']
+
+# Push the container image to Container Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['push', 'gcr.io/$PROJECT_ID/telegram-bot:$COMMIT_SHA']
+
+# Deploy container image to Cloud Run
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args:
+  - 'run'
+  - 'deploy'
+  - 'telegram-bot'
+  - '--image'
+  - 'gcr.io/$PROJECT_ID/telegram-bot:$COMMIT_SHA'
+  - '--region'
+  - 'us-central1'
+  - '--platform'
+  - 'managed'
+  - '--allow-unauthenticated'
+  - '--memory'
+  - '256Mi'
+  - '--cpu'
+  - '1'
+  - '--max-instances'
+  - '1'
+  - '--set-env-vars'
+  - 'WEBHOOK_URL=https://telegram-bot-$PROJECT_ID.a.run.app'
+
+# Update the webhook URL in Telegram
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: /bin/bash
+  args:
+  - '-c'
+  - |
+    # Get the Cloud Run URL
+    CLOUD_RUN_URL=$(gcloud run services describe telegram-bot --platform managed --region us-central1 --format 'value(status.url)')
+    
+    # Get bot token from Secret Manager
+    BOT_TOKEN=$(gcloud secrets versions access latest --secret="telegram-bot-token")
+    
+    # Set webhook URL in Telegram
+    curl -X POST "https://api.telegram.org/bot$$BOT_TOKEN/setWebhook?url=$$CLOUD_RUN_URL/$$BOT_TOKEN"
+
+images:
+- 'gcr.io/$PROJECT_ID/telegram-bot:$COMMIT_SHA'
+
+# Set timeout to 15 minutes (prevents wasteful build time in free tier)
+timeout: 900s
+
+# Use a smaller machine type for CI/CD to stay in free tier
+options:
+  machineType: 'E2_HIGHCPU_2' 
