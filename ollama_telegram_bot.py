@@ -269,7 +269,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
 # Update the model configuration for OpenRouter API
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "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")
+OPENROUTER_API_KEY = "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"
 OPENROUTER_MODEL = "deepseek/deepseek-prover-v2:free"  # Default OpenRouter model
 
 # Global mutable configuration for runtime updates via admin commands
