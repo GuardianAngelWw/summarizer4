@@ -340,6 +340,14 @@ async def is_admin(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: in
         logger.error(f"Error checking admin status: {str(e)}")
         return False
 
+async def delete_message_after_delay(message, delay_seconds: int = 5):
+    """Utility function to delete a message after a specified delay."""
+    try:
+        await asyncio.sleep(delay_seconds)
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Error deleting message after delay: {str(e)}")
+
 def admin_only(func):
     """Decorator to restrict command access to admin users only"""
     @wraps(func)
@@ -366,7 +374,9 @@ def admin_only(func):
             ]
             import random
             rejection_message = random.choice(kawaii_rejection_messages)
-            await update.message.reply_text(rejection_message)
+            denial_msg = await update.message.reply_text(rejection_message)
+            # Delete the rejection message after 5 seconds
+            asyncio.create_task(delete_message_after_delay(denial_msg, 5))
             return
             
         return await func(update, context, *args, **kwargs)
@@ -867,7 +877,9 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Answer a question using the LLM but reply to the person being replied to and delete the command."""
     # Check if this message is a reply
     if update.message.reply_to_message is None:
-        await update.message.reply_text("This command must be used as a reply to another message.")
+        error_msg = await update.message.reply_text("This command must be used as a reply to another message.")
+        # Delete error message after delay
+        asyncio.create_task(delete_message_after_delay(error_msg, 5))
         return
     
     # Get the question from the command text
@@ -918,10 +930,11 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     context_text = get_context_for_question(question, top_n=8)
     if not context_text.strip():
         await thinking_message.delete()
-        await replied_msg.reply_text(
+        error_msg = await replied_msg.reply_text(
             f"{replied_user.mention_html()}, no knowledge entries found to answer your question.", 
             parse_mode=ParseMode.HTML
         )
+        asyncio.create_task(delete_message_after_delay(error_msg, 5))
         await update.message.delete()
         return
 
@@ -1016,10 +1029,11 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
-            await replied_msg.reply_text(
+            error_msg = await replied_msg.reply_text(
                 f"{replied_user.mention_html()}, fool !! I'm 𝘯𝘰𝘵 𝘺𝘰𝘶𝘳 𝘴𝘦𝘳𝘷𝘢𝘯𝘵!",
                 parse_mode=ParseMode.HTML
             )
+            asyncio.create_task(delete_message_after_delay(error_msg, 5))
         try:
             await update.message.delete()
         except Exception as e:
@@ -1027,425 +1041,16 @@ async def here_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as e:
         logger.error(f"Error generating LLM response: {str(e)}")
         await thinking_message.delete()
-        await replied_msg.reply_text(
+        error_msg = await replied_msg.reply_text(
             f"{replied_user.mention_html()}, sorry, I encountered an error while processing your question.\n"
             f"Error: {str(e)[:100]}...",
             parse_mode=ParseMode.HTML
         )
+        asyncio.create_task(delete_message_after_delay(error_msg, 5))
         try:
             await update.message.delete()
         except Exception as e:
             logger.error(f"Error deleting message: {str(e)}")
-
-# Add the logs command handler
-@admin_only
-async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send the last 10 log entries to the chat."""
-    if not last_logs:
-        await update.message.reply_text("No logs available.")
-        return
-
-    # Format logs for display
-    log_text = "📋 Last 10 log entries:\n\n"
-    for log in last_logs:
-        log_text += f"{log}\n"
-
-    # Split message if it's too long
-    if len(log_text) > 4000:  # Telegram message limit is 4096 characters
-        parts = [log_text[i:i+4000] for i in range(0, len(log_text), 4000)]
-        for part in parts:
-            await update.message.reply_text(part)
-    else:
-        await update.message.reply_text(log_text)
-
-# Add custom error handler to exclude sensitive data
-def format_error_for_user(error: Exception) -> str:
-    """Format error message for user, excluding sensitive information."""
-    error_str = str(error)
-    # List of patterns to remove/replace
-    sensitive_patterns = [
-        (r'token=[a-zA-Z0-9:_-]+', 'token=<REDACTED>'),
-        (r'api_key=[a-zA-Z0-9_-]+', 'api_key=<REDACTED>'),
-        (r'password=[a-zA-Z0-9@#$%^&*]+', 'password=<REDACTED>'),
-        (r'BOT_TOKEN=[a-zA-Z0-9:_-]+', 'BOT_TOKEN=<REDACTED>')
-    ]
-    
-    for pattern, replacement in sensitive_patterns:
-        error_str = re.sub(pattern, replacement, error_str)
-    return error_str
-
-@admin_only
-async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text[5:].strip()
-    match = re.match(r'"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
-    if not match:
-        await update.message.reply_text(
-            "Please use the format: /add \"entry text\" \"message_link\" \"optional_category\""
-        )
-        return
-    match_groups = match.groups()
-    entry_text = match_groups[0]
-    link = match_groups[1]
-    category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
-    if add_entry(entry_text, link, category):
-        await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
-    else:
-        await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
-
-@admin_only
-async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    args = context.args if context.args else []
-    query = ""
-    category = None
-    for arg in args:
-        if arg.startswith("category="):
-            category = arg.split("=")[1] if len(arg.split("=")) > 1 else None
-        else:
-            query = arg
-    page = int(context.user_data.get('page', 0))
-    entries = search_entries(query, category) if query else read_entries(category)
-    total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
-    start_idx = page * ENTRIES_PER_PAGE
-    end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
-    if not entries:
-        message = "No entries found."
-        if category:
-            message += f" in category '{category}'"
-        if query:
-            message += f" matching '{query}'"
-        await update.message.reply_text(message)
-        return
-    message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
-    if category:
-        message += f" in category '{category}'"
-    if query:
-        message += f" matching '{query}'"
-    message += ":\n\n"
-    for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
-        message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
-        message += f"   🔗 {entry['link']}\n\n"
-    
-    # Create navigation buttons
-    keyboard = []
-    
-    # Add category filter buttons
-    categories = get_categories()
-    category_buttons = []
-    for cat in categories[:3]:  # Limit to 3 buttons per row
-        category_buttons.append(InlineKeyboardButton(
-            f"📂 {cat}", 
-            callback_data=f"cat:{cat}"
-        ))
-    
-    if category_buttons:
-        keyboard.append(category_buttons)
-    
-    # Add navigation buttons
-    nav_row = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
-    
-    if page < total_pages - 1:
-        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
-    
-    if nav_row:
-        keyboard.append(nav_row)
-    
-    # Add delete buttons
-    for i in range(start_idx, end_idx):
-        keyboard.append([InlineKeyboardButton(
-            f"🗑️ Delete #{i+1}", 
-            callback_data=f"delete:{i}"
-        )])
-    
-    # Add clear all button if there are entries
-    if entries:
-        clear_text = "Clear All"
-        if category:
-            clear_text = f"Clear '{category}' Entries"
-        keyboard.append([InlineKeyboardButton(
-            f"🗑️ {clear_text}", 
-            callback_data=f"clear:{category or 'all'}"
-        )])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    
-    # Store the current page and category in user data
-    context.user_data['page'] = page
-    context.user_data['category'] = category
-    
-    # ********** PATCH STARTS HERE **********
-    # Telegram message limit is 4096, use 4000 as a safe limit for buttons, etc.
-    MAX_LEN = 4000
-    if len(message) > MAX_LEN:
-        logger.warning("Entry list message too long, splitting into multiple messages.")
-        # Split at 4000 chars, but try not to break in the middle of a line
-        lines = message.split('\n')
-        chunk = ""
-        for line in lines:
-            if len(chunk) + len(line) + 1 > MAX_LEN:
-                await update.message.reply_text(chunk, reply_markup=reply_markup)
-                chunk = ""
-            chunk += line + '\n'
-        if chunk:
-            await update.message.reply_text(chunk, reply_markup=reply_markup)
-    else:
-        await update.message.reply_text(message, reply_markup=reply_markup)
-    # ********** PATCH ENDS HERE **********
-
-# Update the handle_pagination function to check for admin permissions (around line 557)
-async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle pagination callbacks and other inline button actions."""
-    query = update.callback_query
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    # Always verify admin permissions first
-    data = query.data
-
-    # Only restrict certain actions to admins
-    if data.startswith(("delete:", "clear:", "confirm_clear:")):
-        is_user_admin = await is_admin(context, chat_id, user_id)
-        if not is_user_admin:
-            # Use cute anime-style rejection messages
-            kawaii_rejection_messages = [
-                "Ara ara~ You don't have permission for that, little one (◕‿◕✿)",
-                "Gomen ne! Only senpais can use this command (´｡• ᵕ •｡`)",
-                "Sumimasen! This feature is for admins only ヽ(；▽；)ノ",
-                "Nyaa~ That's an admin-only button! (=^･ω･^=)",
-                "Ehehe~ You need special powers for that! (◠‿◠✿)",
-                "Uwaaah! That's for admin-senpais only! (≧﹏≦)",
-                "Kyaaaa! You can't do that yet! Maybe ask an admin? (・ω・)ノ",
-                "Oh my, oh my~ That's a special command for admins (✿◠‿◠)",
-                "*Pokes fingers together* S-Sorry, only admins can do that (⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)",
-                "Nani?! This power is too strong for you! Admin only! (☆▽☆)",
-                "Yare yare... You'll need admin privileges for that (￣ヘ￣)",
-                "Eto... This button is for admins only, desu! (◕ᴗ◕✿)"
-            ]
-            import random
-            rejection_message = random.choice(kawaii_rejection_messages)
-            await query.answer(rejection_message, show_alert=True)
-            return
-
-    await query.answer()
-    
-    if data.startswith("cat:"):
-        category = data.split(":")[1]
-        context.user_data['page'] = 0
-        context.user_data['category'] = category
-        fake_update = Update(update.update_id, message=update.effective_message)
-        await list_entries(fake_update, context)
-        return
-    if data.startswith("page:"):
-        parts = data.split(":")
-        page = int(parts[1])
-        category = parts[2] if len(parts) > 2 and parts[2] else None
-        context.user_data['page'] = page
-        entries = read_entries(category)
-        
-        # Calculate pagination
-        total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
-        start_idx = page * ENTRIES_PER_PAGE
-        end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
-        
-        # Build header message
-        message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
-        if category:
-            message += f" in category '{category}'"
-        message += ":\n\n"
-        
-        # Add entries to message with length limit check
-        message_len = len(message)
-        max_len = 3800  # Leave room for markup and footer
-        
-        for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
-            entry_text = entry.get('text', '').strip()
-            category_text = entry.get('category', 'General')
-            link_text = entry.get('link', '').strip()
-            
-            # Truncate entry text if it's too long
-            if len(entry_text) > 100:
-                entry_text = entry_text[:97] + "..."
-                
-            # Truncate link if it's too long
-            if len(link_text) > 60:
-                link_text = link_text[:57] + "..."
-                
-            entry_message = f"{i}. [{category_text}] {entry_text}\n   🔗 {link_text}\n\n"
-            
-            # Check if adding this entry would exceed message length
-            if message_len + len(entry_message) > max_len:
-                message += "\n(Some entries truncated due to message length limit)"
-                break
-                
-            message += entry_message
-            message_len += len(entry_message)
-        
-        # Create navigation buttons
-        keyboard = []
-        
-        # Add category filter buttons (only for admins)
-        categories = get_categories()
-        category_buttons = []
-        for cat in categories[:3]:  # Limit to 3 buttons per row
-            category_buttons.append(InlineKeyboardButton(
-                f"📂 {cat}", 
-                callback_data=f"cat:{cat}"
-            ))
-        
-        if category_buttons:
-            keyboard.append(category_buttons)
-        
-        # Add navigation buttons
-        nav_row = []
-        if page > 0:
-            nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
-        
-        if page < total_pages - 1:
-            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
-        
-        if nav_row:
-            keyboard.append(nav_row)
-        
-        # Add delete buttons (only shown to admins)
-        for i in range(start_idx, end_idx):
-            keyboard.append([InlineKeyboardButton(
-                f"🗑️ Delete #{i+1}", 
-                callback_data=f"delete:{i}"
-            )])
-        
-        # Add clear all button if there are entries (only shown to admins)
-        if entries:
-            clear_text = "Clear All"
-            if category:
-                clear_text = f"Clear '{category}' Entries"
-            keyboard.append([InlineKeyboardButton(
-                f"🗑️ {clear_text}", 
-                callback_data=f"clear:{category or 'all'}"
-            )])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-        
-        # Update message with error handling
-        try:
-            await query.edit_message_text(message, reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"Error updating message: {str(e)}")
-            # If message is too long, try with a simpler message
-            try:
-                simple_message = f"📚 Showing entries for {category or 'all categories'}\n(Message simplified due to length issues)"
-                await query.edit_message_text(simple_message, reply_markup=reply_markup)
-            except Exception as e2:
-                logger.error(f"Failed to send simplified message: {str(e2)}")
-        return
-
-    elif data.startswith("delete:"):
-        index = int(data.split(":")[1])
-        if delete_entry(index):
-            await query.edit_message_text(f"✅ Entry #{index+1} deleted successfully.")
-        else:
-            await query.edit_message_text(f"❌ Failed to delete entry #{index+1}.")
-    elif data.startswith("clear:"):
-        category_filter = data.split(":")[1]
-        category = None if category_filter == 'all' else category_filter
-        confirm_text = "Are you sure you want to clear "
-        if category:
-            confirm_text += f"all entries in category '{category}'?"
-        else:
-            confirm_text += "ALL entries?"
-        keyboard = [
-            [
-                InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
-                InlineKeyboardButton("Cancel", callback_data="cancel_clear")
-            ]
-        ]
-        await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
-    elif data.startswith("reset_prompt:"):
-        if data == "reset_prompt:default":
-            global CURRENT_PROMPT_TEMPLATE, DEFAULT_PROMPT_TEMPLATE
-            CURRENT_PROMPT_TEMPLATE = DEFAULT_PROMPT_TEMPLATE
-            await query.edit_message_text(
-                "✅ Prompt template has been reset to default.\n\n"
-                f"Default template preview: <pre>{DEFAULT_PROMPT_TEMPLATE[:100]}...</pre>",
-                parse_mode=ParseMode.HTML
-            )
-    elif data.startswith("confirm_clear:"):
-        category_filter = data.split(":")[1]
-        category = None if category_filter == 'all' else category_filter
-        count = clear_all_entries(category)
-        if count > 0:
-            await query.edit_message_text(f"✅ Successfully cleared {count} entries.")
-        else:
-            await query.edit_message_text("❌ No entries were cleared or an error occurred.")
-    elif data == "cancel_clear":
-        await query.edit_message_text("Operation cancelled.")
-
-# Helper functions for ask_question
-def build_prompt(question: str, context_text: str) -> str:
-    # Use the global prompt template and format it with the question and context
-    global CURRENT_PROMPT_TEMPLATE
-    return CURRENT_PROMPT_TEMPLATE.format(question=question, context_text=context_text)
-
-
-def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
-    """
-    Replace keywords with Telegram HTML links in the answer.
-
-    :param answer: The generated answer text.
-    :param keywords: A dictionary of keywords and their corresponding URLs.
-    :return: Updated answer with hyperlinks.
-    """
-    def escape_html(text):
-        return (
-            text.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace('"', "&quot;")
-        )
-
-    for word, url in keywords.items():
-        # Escape HTML in the word and URL
-        safe_word = escape_html(word)
-        safe_url = escape_html(url)
-        # Replace only the full word with the hyperlink (HTML)
-        answer = re.sub(
-            rf"(?<!\w)({re.escape(word)})(?!\w)",
-            f'<a href="{safe_url}">{safe_word}</a>',
-            answer
-        )
-    return answer
-
-async def generate_response(prompt: str, _, __=None) -> str:
-    try:
-        logger.info("Sending request to Google AI Studio API...")
-        
-        # Import google.generativeai library
-        try:
-            import google.generativeai as genai
-        except ImportError:
-            logger.error("google.generativeai library not found. Installing...")
-            import subprocess
-            import sys
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "google-generativeai"])
-            import google.generativeai as genai
-        
-        # Configure the Gemini API
-        genai.configure(api_key=CURRENT_AI_API_KEY)
-        
-        # Create a client
-        model = genai.GenerativeModel(CURRENT_AI_MODEL)
-        
-        # Generate content
-        response = model.generate_content(prompt)
-        
-        # Extract the text response
-        answer = response.text
-        
-        logger.info("Received response from Google AI Studio API")
-        return answer.strip()
-    except Exception as e:
-        logger.error(f"Error in generate_response: {str(e)}")
-        raise RuntimeError(f"Failed to generate response: {str(e)}")
 
 @rate_limit()
 async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1609,11 +1214,6 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # Get random emoji for the detected tone
         tone_emoji = random.choice(tone_ratings.get(tone, tone_ratings["neutral"]))
         
-        # Update the thinking message with tone analysis
-#        await thinking_message.edit_text(
-#            f"Query tone {tone_score}/10: {tone_emoji}\n\nGenerating response..."
-#        )
-        
         # Continue with regular processing
         prompt = build_prompt(question, context_text)
         relevant_entries = search_entries_advanced(question, top_n=8)
@@ -1629,32 +1229,23 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             output = output[:3900] + "\n\n... (message truncated due to length)"
         
         try:
-            # Send message and store the message object to delete it later
-            sent_message = await update.message.reply_html(
+            # Send message without scheduling deletion
+            await update.message.reply_html(
                 clean_telegram_html(output),
                 disable_web_page_preview=True
             )
-            
-            # Schedule deletion after 10 minutes (600 seconds)
-            async def delete_after_delay(message, delay):
-                await asyncio.sleep(delay)
-                try:
-                    await message.delete()
-                except Exception as e:
-                    logger.error(f"Error deleting message after delay: {str(e)}")
-                    
-            # Start the deletion task
-            asyncio.create_task(delete_after_delay(sent_message, 600))
         except Exception as e:
             logger.error(f"Error sending response: {str(e)}")
-            await update.message.reply_text(
-                "👉👈 🥹"
-            )
+            error_msg = await update.message.reply_text("👉👈 🥹")
+            # Delete error messages after 5 seconds
+            asyncio.create_task(delete_message_after_delay(error_msg, 5))
     except Exception as e:
         logger.error(f"Error generating response: {str(e)}")
         await thinking_message.delete()
-        await update.message.reply_text("An error occurred while processing your question.")
-                                        
+        error_msg = await update.message.reply_text("An error occurred while processing your question.")
+        # Delete error messages after 5 seconds
+        asyncio.create_task(delete_message_after_delay(error_msg, 5))
+
 @admin_only
 async def clear_all_entries_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     category = None
@@ -1921,3 +1512,424 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception as e:
         logger.error(f"Error in main process: {e}")
+
+# Add the logs command handler
+@admin_only
+async def show_logs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the last 10 log entries to the chat."""
+    if not last_logs:
+        await update.message.reply_text("No logs available.")
+        return
+
+    # Format logs for display
+    log_text = "📋 Last 10 log entries:\n\n"
+    for log in last_logs:
+        log_text += f"{log}\n"
+
+    # Split message if it's too long
+    if len(log_text) > 4000:  # Telegram message limit is 4096 characters
+        parts = [log_text[i:i+4000] for i in range(0, len(log_text), 4000)]
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(log_text)
+
+# Add custom error handler to exclude sensitive data
+def format_error_for_user(error: Exception) -> str:
+    """Format error message for user, excluding sensitive information."""
+    error_str = str(error)
+    # List of patterns to remove/replace
+    sensitive_patterns = [
+        (r'token=[a-zA-Z0-9:_-]+', 'token=<REDACTED>'),
+        (r'api_key=[a-zA-Z0-9_-]+', 'api_key=<REDACTED>'),
+        (r'password=[a-zA-Z0-9@#$%^&*]+', 'password=<REDACTED>'),
+        (r'BOT_TOKEN=[a-zA-Z0-9:_-]+', 'BOT_TOKEN=<REDACTED>')
+    ]
+    
+    for pattern, replacement in sensitive_patterns:
+        error_str = re.sub(pattern, replacement, error_str)
+    return error_str
+
+@admin_only
+async def add_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = update.message.text[5:].strip()
+    match = re.match(r'"([^"]*(?:\\"[^"]*)*?)"\s+"([^"]*(?:\\"[^"]*)*?)"(?:\s+"([^"]*(?:\\"[^"]*)*?)")?', text)
+    if not match:
+        error_msg = await update.message.reply_text(
+            "Please use the format: /add \"entry text\" \"message_link\" \"optional_category\""
+        )
+        # Delete error message after delay
+        asyncio.create_task(delete_message_after_delay(error_msg, 5))
+        return
+    match_groups = match.groups()
+    entry_text = match_groups[0]
+    link = match_groups[1]
+    category = match_groups[2] if len(match_groups) > 2 and match_groups[2] else "General"
+    if add_entry(entry_text, link, category):
+        await update.message.reply_text(f"✅ Added new entry:\n\nCategory: {category}\nText: {entry_text}\nLink: {link}")
+    else:
+        error_msg = await update.message.reply_text("❌ Error: Entry already exists or could not be added.")
+        # Delete error message after delay
+        asyncio.create_task(delete_message_after_delay(error_msg, 5))
+
+@admin_only
+async def list_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args if context.args else []
+    query = ""
+    category = None
+    for arg in args:
+        if arg.startswith("category="):
+            category = arg.split("=")[1] if len(arg.split("=")) > 1 else None
+        else:
+            query = arg
+    page = int(context.user_data.get('page', 0))
+    entries = search_entries(query, category) if query else read_entries(category)
+    total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
+    start_idx = page * ENTRIES_PER_PAGE
+    end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
+    if not entries:
+        message = "No entries found."
+        if category:
+            message += f" in category '{category}'"
+        if query:
+            message += f" matching '{query}'"
+        await update.message.reply_text(message)
+        return
+    message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
+    if category:
+        message += f" in category '{category}'"
+    if query:
+        message += f" matching '{query}'"
+    message += ":\n\n"
+    for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
+        message += f"{i}. [{entry.get('category', 'General')}] {entry['text']}\n"
+        message += f"   🔗 {entry['link']}\n\n"
+    
+    # Create navigation buttons
+    keyboard = []
+    
+    # Add category filter buttons
+    categories = get_categories()
+    category_buttons = []
+    for cat in categories[:3]:  # Limit to 3 buttons per row
+        category_buttons.append(InlineKeyboardButton(
+            f"📂 {cat}", 
+            callback_data=f"cat:{cat}"
+        ))
+    
+    if category_buttons:
+        keyboard.append(category_buttons)
+    
+    # Add navigation buttons
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
+    
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
+    
+    if nav_row:
+        keyboard.append(nav_row)
+    
+    # Add delete buttons
+    for i in range(start_idx, end_idx):
+        keyboard.append([InlineKeyboardButton(
+            f"🗑️ Delete #{i+1}", 
+            callback_data=f"delete:{i}"
+        )])
+    
+    # Add clear all button if there are entries
+    if entries:
+        clear_text = "Clear All"
+        if category:
+            clear_text = f"Clear '{category}' Entries"
+        keyboard.append([InlineKeyboardButton(
+            f"🗑️ {clear_text}", 
+            callback_data=f"clear:{category or 'all'}"
+        )])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    # Store the current page and category in user data
+    context.user_data['page'] = page
+    context.user_data['category'] = category
+    
+    # ********** PATCH STARTS HERE **********
+    # Telegram message limit is 4096, use 4000 as a safe limit for buttons, etc.
+    MAX_LEN = 4000
+    if len(message) > MAX_LEN:
+        logger.warning("Entry list message too long, splitting into multiple messages.")
+        # Split at 4000 chars, but try not to break in the middle of a line
+        lines = message.split('\n')
+        chunk = ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > MAX_LEN:
+                await update.message.reply_text(chunk, reply_markup=reply_markup)
+                chunk = ""
+            chunk += line + '\n'
+        if chunk:
+            await update.message.reply_text(chunk, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(message, reply_markup=reply_markup)
+    # ********** PATCH ENDS HERE **********
+
+# Update the handle_pagination function to check for admin permissions
+async def handle_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle pagination callbacks and other inline button actions."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Always verify admin permissions first
+    data = query.data
+
+    # Only restrict certain actions to admins
+    if data.startswith(("delete:", "clear:", "confirm_clear:")):
+        is_user_admin = await is_admin(context, chat_id, user_id)
+        if not is_user_admin:
+            # Use cute anime-style rejection messages
+            kawaii_rejection_messages = [
+                "Ara ara~ You don't have permission for that, little one (◕‿◕✿)",
+                "Gomen ne! Only senpais can use this command (´｡• ᵕ •｡`)",
+                "Sumimasen! This feature is for admins only ヽ(；▽；)ノ",
+                "Nyaa~ That's an admin-only button! (=^･ω･^=)",
+                "Ehehe~ You need special powers for that! (◠‿◠✿)",
+                "Uwaaah! That's for admin-senpais only! (≧﹏≦)",
+                "Kyaaaa! You can't do that yet! Maybe ask an admin? (・ω・)ノ",
+                "Oh my, oh my~ That's a special command for admins (✿◠‿◠)",
+                "*Pokes fingers together* S-Sorry, only admins can do that (⁄ ⁄>⁄ ▽ ⁄<⁄ ⁄)",
+                "Nani?! This power is too strong for you! Admin only! (☆▽☆)",
+                "Yare yare... You'll need admin privileges for that (￣ヘ￣)",
+                "Eto... This button is for admins only, desu! (◕ᴗ◕✿)"
+            ]
+            import random
+            rejection_message = random.choice(kawaii_rejection_messages)
+            await query.answer(rejection_message, show_alert=True)
+            
+            # Also send a rejection message that will be auto-deleted
+            try:
+                error_msg = await update.effective_message.reply_text(rejection_message)
+                asyncio.create_task(delete_message_after_delay(error_msg, 5))
+            except Exception as e:
+                logger.error(f"Error sending rejection message: {str(e)}")
+            return
+
+    await query.answer()
+    
+    if data.startswith("cat:"):
+        category = data.split(":")[1]
+        context.user_data['page'] = 0
+        context.user_data['category'] = category
+        fake_update = Update(update.update_id, message=update.effective_message)
+        await list_entries(fake_update, context)
+        return
+    if data.startswith("page:"):
+        parts = data.split(":")
+        page = int(parts[1])
+        category = parts[2] if len(parts) > 2 and parts[2] else None
+        context.user_data['page'] = page
+        entries = read_entries(category)
+        
+        # Calculate pagination
+        total_pages = (len(entries) + ENTRIES_PER_PAGE - 1) // ENTRIES_PER_PAGE
+        start_idx = page * ENTRIES_PER_PAGE
+        end_idx = min(start_idx + ENTRIES_PER_PAGE, len(entries))
+        
+        # Build header message
+        message = f"📚 Entries {start_idx+1}-{end_idx} of {len(entries)}"
+        if category:
+            message += f" in category '{category}'"
+        message += ":\n\n"
+        
+        # Add entries to message with length limit check
+        message_len = len(message)
+        max_len = 3800  # Leave room for markup and footer
+        
+        for i, entry in enumerate(entries[start_idx:end_idx], start=start_idx + 1):
+            entry_text = entry.get('text', '').strip()
+            category_text = entry.get('category', 'General')
+            link_text = entry.get('link', '').strip()
+            
+            # Truncate entry text if it's too long
+            if len(entry_text) > 100:
+                entry_text = entry_text[:97] + "..."
+                
+            # Truncate link if it's too long
+            if len(link_text) > 60:
+                link_text = link_text[:57] + "..."
+                
+            entry_message = f"{i}. [{category_text}] {entry_text}\n   🔗 {link_text}\n\n"
+            
+            # Check if adding this entry would exceed message length
+            if message_len + len(entry_message) > max_len:
+                message += "\n(Some entries truncated due to message length limit)"
+                break
+                
+            message += entry_message
+            message_len += len(entry_message)
+        
+        # Create navigation buttons
+        keyboard = []
+        
+        # Add category filter buttons (only for admins)
+        categories = get_categories()
+        category_buttons = []
+        for cat in categories[:3]:  # Limit to 3 buttons per row
+            category_buttons.append(InlineKeyboardButton(
+                f"📂 {cat}", 
+                callback_data=f"cat:{cat}"
+            ))
+        
+        if category_buttons:
+            keyboard.append(category_buttons)
+        
+        # Add navigation buttons
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}:{category or ''}"))
+        
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}:{category or ''}"))
+        
+        if nav_row:
+            keyboard.append(nav_row)
+        
+        # Add delete buttons (only shown to admins)
+        for i in range(start_idx, end_idx):
+            keyboard.append([InlineKeyboardButton(
+                f"🗑️ Delete #{i+1}", 
+                callback_data=f"delete:{i}"
+            )])
+        
+        # Add clear all button if there are entries (only shown to admins)
+        if entries:
+            clear_text = "Clear All"
+            if category:
+                clear_text = f"Clear '{category}' Entries"
+            keyboard.append([InlineKeyboardButton(
+                f"🗑️ {clear_text}", 
+                callback_data=f"clear:{category or 'all'}"
+            )])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        
+        # Update message with error handling
+        try:
+            await query.edit_message_text(message, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Error updating message: {str(e)}")
+            # If message is too long, try with a simpler message
+            try:
+                simple_message = f"📚 Showing entries for {category or 'all categories'}\n(Message simplified due to length issues)"
+                await query.edit_message_text(simple_message, reply_markup=reply_markup)
+            except Exception as e2:
+                logger.error(f"Failed to send simplified message: {str(e2)}")
+        return
+
+    elif data.startswith("delete:"):
+        index = int(data.split(":")[1])
+        if delete_entry(index):
+            await query.edit_message_text(f"✅ Entry #{index+1} deleted successfully.")
+        else:
+            await query.edit_message_text(f"❌ Failed to delete entry #{index+1}.")
+    elif data.startswith("clear:"):
+        category_filter = data.split(":")[1]
+        category = None if category_filter == 'all' else category_filter
+        confirm_text = "Are you sure you want to clear "
+        if category:
+            confirm_text += f"all entries in category '{category}'?"
+        else:
+            confirm_text += "ALL entries?"
+        keyboard = [
+            [
+                InlineKeyboardButton("Yes, Clear", callback_data=f"confirm_clear:{category or 'all'}"),
+                InlineKeyboardButton("Cancel", callback_data="cancel_clear")
+            ]
+        ]
+        await query.edit_message_text(confirm_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("reset_prompt:"):
+        if data == "reset_prompt:default":
+            global CURRENT_PROMPT_TEMPLATE, DEFAULT_PROMPT_TEMPLATE
+            CURRENT_PROMPT_TEMPLATE = DEFAULT_PROMPT_TEMPLATE
+            await query.edit_message_text(
+                "✅ Prompt template has been reset to default.\n\n"
+                f"Default template preview: <pre>{DEFAULT_PROMPT_TEMPLATE[:100]}...</pre>",
+                parse_mode=ParseMode.HTML
+            )
+    elif data.startswith("confirm_clear:"):
+        category_filter = data.split(":")[1]
+        category = None if category_filter == 'all' else category_filter
+        count = clear_all_entries(category)
+        if count > 0:
+            await query.edit_message_text(f"✅ Successfully cleared {count} entries.")
+        else:
+            await query.edit_message_text("❌ No entries were cleared or an error occurred.")
+    elif data == "cancel_clear":
+        await query.edit_message_text("Operation cancelled.")
+
+# Helper functions for ask_question
+def build_prompt(question: str, context_text: str) -> str:
+    # Use the global prompt template and format it with the question and context
+    global CURRENT_PROMPT_TEMPLATE
+    return CURRENT_PROMPT_TEMPLATE.format(question=question, context_text=context_text)
+
+
+def add_hyperlinks(answer: str, keywords: Dict[str, str]) -> str:
+    """
+    Replace keywords with Telegram HTML links in the answer.
+
+    :param answer: The generated answer text.
+    :param keywords: A dictionary of keywords and their corresponding URLs.
+    :return: Updated answer with hyperlinks.
+    """
+    def escape_html(text):
+        return (
+            text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+        )
+
+    for word, url in keywords.items():
+        # Escape HTML in the word and URL
+        safe_word = escape_html(word)
+        safe_url = escape_html(url)
+        # Replace only the full word with the hyperlink (HTML)
+        answer = re.sub(
+            rf"(?<!\w)({re.escape(word)})(?!\w)",
+            f'<a href="{safe_url}">{safe_word}</a>',
+            answer
+        )
+    return answer
+
+async def generate_response(prompt: str, _, __=None) -> str:
+    try:
+        logger.info("Sending request to Google AI Studio API...")
+        
+        # Import google.generativeai library
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            logger.error("google.generativeai library not found. Installing...")
+            import subprocess
+            import sys
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "google-generativeai"])
+            import google.generativeai as genai
+        
+        # Configure the Gemini API
+        genai.configure(api_key=CURRENT_AI_API_KEY)
+        
+        # Create a client
+        model = genai.GenerativeModel(CURRENT_AI_MODEL)
+        
+        # Generate content
+        response = model.generate_content(prompt)
+        
+        # Extract the text response
+        answer = response.text
+        
+        logger.info("Received response from Google AI Studio API")
+        return answer.strip()
+    except Exception as e:
+        logger.error(f"Error in generate_response: {str(e)}")
+        raise RuntimeError(f"Failed to generate response: {str(e)}")
