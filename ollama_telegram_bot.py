@@ -1502,16 +1502,16 @@ async def main():
         # Send shutdown notification
         await status_monitor.send_shutdown_notification()
 
-
-if __name__ == "__main__":
-    # No need for Flask server since we're removing Google Cloud Run
-    # Run the Telegram bot directly
-    logger.info("Starting Summarizer2 Telegram Bot")
-    try:
-        # With nest_asyncio.apply() already called, we can use asyncio.run safely
-        asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Error in main process: {e}")
+# Commenting out the original main guard which runs too early
+# if __name__ == "__main__":
+#     # No need for Flask server since we're removing Google Cloud Run
+#     # Run the Telegram bot directly
+#     logger.info("Starting Summarizer2 Telegram Bot")
+#     try:
+#         # With nest_asyncio.apply() already called, we can use asyncio.run safely
+#         asyncio.run(main())
+#     except Exception as e:
+#         logger.error(f"Error in main process: {e}")
 
 # Add the logs command handler
 @admin_only
@@ -1933,3 +1933,14 @@ async def generate_response(prompt: str, _, __=None) -> str:
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}")
         raise RuntimeError(f"Failed to generate response: {str(e)}")
+
+# Append the main guard at the end of the file
+if __name__ == "__main__":
+    # No need for Flask server since we're removing Google Cloud Run
+    # Run the Telegram bot directly
+    logger.info("Starting Summarizer2 Telegram Bot")
+    try:
+        # With nest_asyncio.apply() already called, we can use asyncio.run safely
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Error in main process: {e}")
