@@ -242,7 +242,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAEmx99ZrXDjdpcXtrN6jqJL98o483b8nVM"
+BOT_TOKEN = "6614402193:AAGhNMsd7FBCXgR4VB1apurMa3reKP1pc9M"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
@@ -376,7 +376,7 @@ def admin_only(func):
             rejection_message = random.choice(kawaii_rejection_messages)
             denial_msg = await update.message.reply_text(rejection_message)
             # Delete the rejection message after 5 seconds
-            asyncio.create_task(delete_message_after_delay(denial_msg, 5))
+            #asyncio.create_task(delete_message_after_delay(denial_msg, 5))
             return
             
         return await func(update, context, *args, **kwargs)
