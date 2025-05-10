@@ -242,7 +242,7 @@ class MemoryLogHandler(logging.Handler):
 logger = logging.getLogger(__name__)
 
 # Configuration
-BOT_TOKEN = "6614402193:AAHaB6seWELVKIiqHobOUG6io_Lfms9u160"
+BOT_TOKEN = "6614402193:AAEmx99ZrXDjdpcXtrN6jqJL98o483b8nVM"
 bot_token = BOT_TOKEN
 
 # Modify the logging setup (around line 55)
