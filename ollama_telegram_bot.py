@@ -257,7 +257,7 @@ CATEGORIES_FILE = "categories.json"
 CSV_HEADERS = ["text", "link", "category"]  # Removed group_id
 
 # Update the model configuration for Groq API
-TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
+TOGETHER_API_KEY = os.getenv("GROQ_API_KEY", "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")
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Using Groq compatible model
 
 # Global mutable configuration for runtime updates via admin commands
