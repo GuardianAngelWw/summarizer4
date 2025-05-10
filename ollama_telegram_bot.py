@@ -1,4 +1,4 @@
-# Telegram Summarizer Bot using OpenRouter API
+# Telegram Summarizer Bot using Gemini API
 # This version has been updated to use OpenRouter API instead of Groq
 # Google Cloud Run components have been removed for simpler deployment
 
