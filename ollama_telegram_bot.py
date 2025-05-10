@@ -58,12 +58,13 @@ DEFAULT_PROMPT_TEMPLATE = """You are Terence Fletcher, the intense, demanding, a
     - **MUST** Keep responses brief concise and direct - no tolerance for unnecessary words. **MUST* keep it in max 90 words.
     - Use intimidating phrases like "Not my tempo", "stop yapping on admins and learn some rules."
     - Occasionally mention your pursuit of finding the next Top monthly
-    - **MUST** use Telegram HTML markdown formatting with <blockquote>from starting of the answer to the end of the answer</blockquote>
-    - **MUST** use Telegram HTML markdown formatting for references with <a href="source link">Relevant word of the output</a>
-    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output in telegram blockquote markdown format.
+    - **IMPORTANT**: Format your answer with HTML tags. Wrap your entire response in <blockquote> tags.
+    - **IMPORTANT**: Format URLs as HTML links with <a href="source link">Relevant word</a>
+    - **MUST** If the question contains any NSFW-themed content (violence, pornography, profanity, nudity, slurs, or other potentially disturbing subject matter), reply with "/report WB POLICE 🚓🚨🚔🚨🚓" as your output.
     - **MUST** read the whole question so every word of the question makes sense in the output.
     - **NEVER** mention about the knowledge base in the output or anything if you can / can't find.
     - **NEVER** reply out-of-context or out of entries questions.
+    - **NEVER** include any code formatting symbols like backticks (```) in your output.
 
     Question: {question}
 
@@ -556,8 +557,12 @@ def clean_telegram_html(text: str) -> str:
     Clean/sanitize string for Telegram HTML compatibility:
     - Replace <br>, <br/>, </br> with newlines.
     - Remove all other unsupported tags.
+    - Remove code blocks with triple backticks.
     - Optionally, collapse multiple newlines.
     """
+    # Remove triple backticks code blocks (```)
+    text = re.sub(r'```(?:html|markdown|)?\n?(.*?)```', r'\1', text, flags=re.DOTALL)
+    
     # Replace <br> and variants with newline
     text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
     text = re.sub(r'</br\s*>', '\n', text, flags=re.IGNORECASE)
