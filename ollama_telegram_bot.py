@@ -10,6 +10,7 @@ import logging
 import re
 import tempfile
 import json
+import html
 from typing import List, Dict, Optional, Tuple, Any, Set
 from functools import wraps
 from collections import deque
@@ -34,6 +35,7 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode, ChatType
+from telegram.error import BadRequest
 import requests
 import json
 import logging.handlers
@@ -519,16 +521,34 @@ async def show_entry_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"Entry #{args[0]} does not exist. There are {len(entries)} entries.")
         return
     entry = entries[idx]
+    
+    # Sanitize content for HTML
+    safe_text = clean_telegram_html(entry['text'])
+    safe_link = html.escape(entry['link'])
+    safe_category = html.escape(entry.get('category', 'General'))
+    
     msg = (
         f"<b>Entry #{idx+1}</b>\n"
-        f"<b>Category:</b> {entry.get('category', 'General')}\n"
-        f"<b>Text:</b>\n<blockquote>{entry['text']}</blockquote>\n"
-        f"<b>Link:</b> <a href='{entry['link']}'>{entry['link']}</a>"
+        f"<b>Category:</b> {safe_category}\n"
+        f"<b>Text:</b>\n<blockquote>{safe_text}</blockquote>\n"
+        f"<b>Link:</b> <a href='{safe_link}'>{safe_link}</a>"
     )
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("🗑️ Delete", callback_data=f"sdelete:{idx}")]
     ])
-    await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
+    
+    try:
+        await update.message.reply_html(msg, reply_markup=keyboard, disable_web_page_preview=True)
+    except BadRequest as e:
+        logger.error(f"HTML rendering error: {str(e)}")
+        # Fallback without HTML formatting
+        plain_msg = (
+            f"Entry #{idx+1}\n"
+            f"Category: {entry.get('category', 'General')}\n"
+            f"Text: {entry['text']}\n"
+            f"Link: {entry['link']}"
+        )
+        await update.message.reply_text(plain_msg, reply_markup=keyboard)
 
 @admin_only  # Only allow admins to delete
 async def handle_single_entry_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1857,7 +1877,7 @@ async def main():
         application.add_handler(CommandHandler("upload", request_csv_upload))
         application.add_handler(CommandHandler("clear", clear_all_entries_command))
         application.add_handler(CommandHandler("here", here_command))
-        application.add_handler(CommandHandler("logs", show_logs))
+        application.add_handler(CommandHandler("lux", show_logs))
         application.add_handler(CommandHandler("s", show_entry_command))
         application.add_handler(CommandHandler("i", insert_entry_command))
         application.add_handler(CommandHandler("slowmode", slowmode_command))
